@@ -114,6 +114,29 @@ describe("watch and notification flow", () => {
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM notification_queue").get()?.count).toBe(0);
   });
 
+  it("automatically watches a new guild, preserves explicit off, and resumes with watch on", async () => {
+    const { accounts, watches, notifications } = await setup();
+    await registerMain(accounts); await link(accounts, "main", "a", "a");
+    const visibility = { isMember: async () => true, canViewChannel: async () => true };
+    expect(watches.status("new-guild", "a")).toBe("auto");
+    expect(await notifications.inspect({ id: "auto", guildId: "new-guild", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, visibility)).toBe(1);
+    await watches.set("new-guild", "a", false, { isMember: async () => true });
+    expect(watches.status("new-guild", "a")).toBe("off");
+    expect(await notifications.inspect({ id: "off", guildId: "new-guild", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, visibility)).toBe(0);
+    await watches.set("new-guild", "a", true, { isMember: async () => true });
+    expect(watches.status("new-guild", "a")).toBe("on");
+    expect(await notifications.inspect({ id: "on", guildId: "new-guild", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, visibility)).toBe(1);
+  });
+
+  it("persists explicit watch off across a database reopen", async () => {
+    const state = await setup(); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    await state.watches.set("guild", "a", false, { isMember: async () => true });
+    const dbPath = path.join(state.dir, "test.sqlite"); state.db.close();
+    const reopened = await SqliteDatabase.open(dbPath);
+    expect(new WatchService(reopened, new AccountService(reopened)).status("guild", "a")).toBe("off");
+    reopened.close();
+  });
+
   it("requires a linked sub account and membership before watch on", async () => {
     const { watches } = await setup();
     await expect(watches.set("guild", "unlinked", true, { isMember: async () => true })).rejects.toThrow("連携済み");
@@ -122,7 +145,7 @@ describe("watch and notification flow", () => {
   it("does not enable watch when the user is not a guild member", async () => {
     const { accounts, watches } = await setup(); await registerMain(accounts); await link(accounts, "main", "a");
     await expect(watches.set("guild", "a", true, { isMember: async () => false })).rejects.toThrow("メンバー");
-    expect(watches.status("guild", "a")).toBe(false);
+    expect(watches.status("guild", "a")).toBe("auto");
   });
 
   it("does not enqueue when the target cannot view the source channel", async () => {
@@ -133,6 +156,11 @@ describe("watch and notification flow", () => {
   it("does not enqueue unrelated messages", async () => {
     const { accounts, watches, notifications } = await setup(); await registerMain(accounts); await link(accounts, "main", "a"); await watches.set("guild", "a", true, { isMember: async () => true });
     expect(await notifications.inspect({ id: "unrelated", guildId: "guild", authorBot: false, mentionedUserIds: ["someone-else"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true })).toBe(0);
+  });
+
+  it("does not forward a direct mention of the main account", async () => {
+    const { accounts, watches, notifications } = await setup(); await registerMain(accounts); await link(accounts, "main", "a"); await watches.set("guild", "a", true, { isMember: async () => true });
+    expect(await notifications.inspect({ id: "main-mention", guildId: "guild", authorBot: false, mentionedUserIds: ["main"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true })).toBe(0);
   });
 
   it("groups direct mentions for the same main account and deduplicates the message", async () => {
@@ -163,8 +191,8 @@ describe("watch and notification flow", () => {
     expect(sent[0]).toContain("全体メンション");
   });
 
-  it("targets only explicitly watched linked accounts for everyone mentions", async () => {
-    const { accounts, watches, notifications, db } = await setup("main"); await registerMain(accounts); await link(accounts, "main", "a"); await link(accounts, "main", "b"); await watches.set("guild", "a", true, { isMember: async () => true });
+  it("targets linked accounts except those explicitly switched off for everyone mentions", async () => {
+    const { accounts, watches, notifications, db } = await setup("main"); await registerMain(accounts); await link(accounts, "main", "a"); await link(accounts, "main", "b"); await watches.set("guild", "b", false, { isMember: async () => true });
     expect(await notifications.inspect({ id: "everyone-one", guildId: "guild", authorBot: false, mentionedUserIds: [], mentionEveryone: true }, { isMember: async () => true, canViewChannel: async () => true })).toBe(1);
     expect((db.raw.prepare("SELECT target_user_ids FROM notification_queue WHERE message_id='everyone-one'").get() as { target_user_ids: string }).target_user_ids).toBe('["a"]');
   });

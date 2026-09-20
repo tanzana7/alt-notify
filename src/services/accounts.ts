@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import type { SqliteDatabase } from "../db.js";
 
 export type Plan = "free" | "pro" | "developer_test";
-export interface AccountStatus { kind: "main" | "sub" | "none"; mainUserId?: string; mainUsername?: string; links: Array<{ userId: string; username: string }>; watches: string[]; }
+export interface AccountStatus { kind: "main" | "sub" | "none"; mainUserId?: string; mainUsername?: string; links: Array<{ userId: string; username: string; watchOffGuilds?: string[] }>; watches: string[]; watchOffGuilds: string[]; }
 
 export class AccountService {
   private readonly failedCodeAttempts = new Map<string, { since: number; count: number }>();
@@ -80,14 +80,20 @@ export class AccountService {
   public getStatus(userId: string): AccountStatus {
     const main = this.db.raw.prepare("SELECT user_id AS userId FROM main_accounts WHERE user_id=?").get(userId) as { userId: string } | undefined;
     if (main) {
-      const links = this.db.raw.prepare("SELECT sub_user_id AS userId, username FROM account_links WHERE main_user_id=? ORDER BY created_at").all(userId) as Array<{ userId: string; username: string }>;
+      const links = this.db.raw.prepare(`
+        SELECT l.sub_user_id AS userId, l.username,
+          COALESCE((SELECT json_group_array(w.guild_id) FROM guild_watches w WHERE w.sub_user_id=l.sub_user_id AND w.enabled=0), '[]') AS watchOffGuilds
+        FROM account_links l WHERE l.main_user_id=? ORDER BY l.created_at
+      `).all(userId).map((row) => ({ ...(row as { userId: string; username: string; watchOffGuilds: string }), watchOffGuilds: JSON.parse((row as { watchOffGuilds: string }).watchOffGuilds) as string[] }));
       const watches = this.db.raw.prepare("SELECT guild_id FROM guild_watches WHERE sub_user_id IN (SELECT sub_user_id FROM account_links WHERE main_user_id=?) AND enabled=1").all(userId).map((r) => (r as { guild_id: string }).guild_id);
-      return { kind: "main", links, watches };
+      const watchOffGuilds = this.db.raw.prepare("SELECT DISTINCT guild_id FROM guild_watches WHERE sub_user_id IN (SELECT sub_user_id FROM account_links WHERE main_user_id=?) AND enabled=0").all(userId).map((r) => (r as { guild_id: string }).guild_id);
+      return { kind: "main", links, watches, watchOffGuilds };
     }
     const sub = this.getMainForSub(userId);
-    if (!sub) return { kind: "none", links: [], watches: [] };
+    if (!sub) return { kind: "none", links: [], watches: [], watchOffGuilds: [] };
     const watches = this.db.raw.prepare("SELECT guild_id FROM guild_watches WHERE sub_user_id=? AND enabled=1").all(userId).map((r) => (r as { guild_id: string }).guild_id);
-    return { kind: "sub", mainUserId: sub.mainUserId, mainUsername: sub.mainUsername, links: [], watches };
+    const watchOffGuilds = this.db.raw.prepare("SELECT guild_id FROM guild_watches WHERE sub_user_id=? AND enabled=0").all(userId).map((r) => (r as { guild_id: string }).guild_id);
+    return { kind: "sub", mainUserId: sub.mainUserId, mainUsername: sub.mainUsername, links: [], watches, watchOffGuilds };
   }
 
   public getMainForSub(subUserId: string): { mainUserId: string; mainUsername: string } | undefined {
@@ -95,7 +101,12 @@ export class AccountService {
   }
 
   public linkedSubsForGuild(guildId: string): Array<{ mainUserId: string; subUserId: string; username: string }> {
-    return this.db.raw.prepare("SELECT l.main_user_id AS mainUserId, l.sub_user_id AS subUserId, l.username FROM account_links l JOIN guild_watches w ON w.sub_user_id=l.sub_user_id WHERE w.guild_id=? AND w.enabled=1").all(guildId) as Array<{ mainUserId: string; subUserId: string; username: string }>;
+    // 設定行がない場合は自動監視ON。enabled=0だけが明示的なOFFとして除外される。
+    return this.db.raw.prepare(`
+      SELECT l.main_user_id AS mainUserId, l.sub_user_id AS subUserId, l.username
+      FROM account_links l LEFT JOIN guild_watches w ON w.sub_user_id=l.sub_user_id AND w.guild_id=?
+      WHERE w.enabled IS NULL OR w.enabled=1
+    `).all(guildId) as Array<{ mainUserId: string; subUserId: string; username: string }>;
   }
 
   private getCodeRow(codeHash: string): { mainUserId: string; mainUsername: string; expiresAt: number; usedAt: number | null } {

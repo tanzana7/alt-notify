@@ -22,6 +22,7 @@ import { NotificationService } from "./services/notifications.js";
 import { getStats } from "./services/stats.js";
 import { ApprovalStore } from "./services/approval.js";
 import { canUseAdminStats } from "./services/permissions.js";
+import { MemberCache } from "./services/member-cache.js";
 
 const config = loadConfig();
 const logger = new Logger(config.LOG_LEVEL);
@@ -34,6 +35,7 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 const pendingApprovals = new ApprovalStore();
+const memberCache = new MemberCache<GuildMember>(5_000);
 
 function privateReply(interaction: ChatInputCommandInteraction | ButtonInteraction, content: string, components?: ActionRowBuilder<ButtonBuilder>[]): Promise<unknown> {
   const message = { content, ...(components ? { components } : {}) };
@@ -42,16 +44,17 @@ function privateReply(interaction: ChatInputCommandInteraction | ButtonInteracti
 }
 
 function memberAccess(message: Message) {
+  const guild = message.guild!;
+  const getMember = (userId: string): Promise<GuildMember | null> => memberCache.get(`${guild.id}:${userId}`, async () => guild.members.cache.get(userId) ?? await guild.members.fetch(userId));
   return {
     isMember: async (userId: string): Promise<boolean> => {
-      try { await message.guild!.members.fetch(userId); return true; } catch { return false; }
+      return Boolean(await getMember(userId));
     },
     canViewChannel: async (userId: string): Promise<boolean> => {
-      try {
-        const member = await message.guild!.members.fetch(userId);
-        const permissions = (message.channel as unknown as { permissionsFor: (member: GuildMember) => { has: (permission: bigint) => boolean } | null }).permissionsFor(member);
-        return Boolean(permissions?.has(PermissionFlagsBits.ViewChannel));
-      } catch { return false; }
+      const member = await getMember(userId);
+      if (!member) return false;
+      const permissions = (message.channel as unknown as { permissionsFor: (member: GuildMember) => { has: (permission: bigint) => boolean } | null }).permissionsFor(member);
+      return Boolean(permissions?.has(PermissionFlagsBits.ViewChannel));
     }
   };
 }
@@ -75,17 +78,22 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
       const preview = accounts.previewLinkCode(interaction.user.id, code);
       const token = pendingApprovals.issue(interaction.user.id, accounts.hashForApproval(code));
       const button = new ButtonBuilder().setCustomId(`link-approve:${token}`).setLabel("連携を承認する").setStyle(ButtonStyle.Primary);
-      await privateReply(interaction, `連携先：${preview.mainUsername}\nID：${preview.mainUserId}`, [new ActionRowBuilder<ButtonBuilder>().addComponents(button)]);
+      await privateReply(interaction, `連携先：${preview.mainUsername}\nID：${preview.mainUserId}\n自動監視：連携承認後に有効`, [new ActionRowBuilder<ButtonBuilder>().addComponents(button)]);
       return;
     }
     if (interaction.commandName === "watch") {
       if (!interaction.guildId) { await privateReply(interaction, "サーバー内で実行してください"); return; }
       const sub = subcommand;
-      if (sub === "status") { await privateReply(interaction, watches.status(interaction.guildId, interaction.user.id) ? "監視中" : "監視していません"); return; }
+      if (sub === "status") {
+        const state = watches.status(interaction.guildId, interaction.user.id);
+        const text = state === "auto" ? "自動監視中" : state === "on" ? "監視中（手動ON）" : state === "off" ? "このサーバーはOFF" : "連携されていません";
+        await privateReply(interaction, text);
+        return;
+      }
       const guild = interaction.guild;
       if (!guild) { await privateReply(interaction, "サーバー内で実行してください"); return; }
       await watches.set(interaction.guildId, interaction.user.id, sub === "on", { isMember: async (userId) => { try { await guild.members.fetch(userId); return true; } catch { return false; } } });
-      await privateReply(interaction, sub === "on" ? "このサーバーを監視します" : "このサーバーの監視を停止しました");
+      await privateReply(interaction, sub === "on" ? "このサーバーの監視を再開しました" : "このサーバーの監視をOFFにしました");
       return;
     }
     if (interaction.commandName === "unlink") {
@@ -99,8 +107,11 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
     if (interaction.commandName === "status") {
       const status = accounts.getStatus(interaction.user.id);
       if (status.kind === "none") { await privateReply(interaction, "連携はありません"); return; }
-      if (status.kind === "main") { await privateReply(interaction, status.links.length ? `連携中：${status.links.map((link) => link.username).join("、")}` : "連携中のサブアカウントはありません"); return; }
-      await privateReply(interaction, `連携先：${status.mainUsername}\n監視中のサーバー数：${status.watches.length}`);
+      if (status.kind === "main") {
+        await privateReply(interaction, status.links.length ? `連携中：${status.links.map((link) => `${link.username}${link.watchOffGuilds?.length ? `（個別OFF ${link.watchOffGuilds.length}件）` : "（自動監視）"}`).join("、")}` : "連携中のサブアカウントはありません");
+        return;
+      }
+      await privateReply(interaction, `連携先：${status.mainUsername}\n自動監視：有効\n個別OFFサーバー数：${status.watchOffGuilds.length}`);
       return;
     }
     if (interaction.commandName === "admin-stats") {
@@ -124,7 +135,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     const codeHash = pendingApprovals.consume(token, interaction.user.id);
     const result = accounts.approveLinkByHash(interaction.user.id, codeHash, interaction.user.username);
-    await interaction.update({ content: "連携を承認しました", components: [] });
+    await interaction.update({ content: "連携を承認しました。自動監視を有効にしました", components: [] });
     await client.users.send(result.mainUserId, { content: `サブアカウント「${interaction.user.username}」を連携しました。`, allowedMentions: { parse: [] } }).catch((error: unknown) => logger.warn("link confirmation DM failed", { mainUserId: result.mainUserId, error: error instanceof Error ? error.message : "unknown" }));
   } catch (error) { await privateReply(interaction, error instanceof Error ? error.message : "連携に失敗しました"); }
 });
