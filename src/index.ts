@@ -150,4 +150,11 @@ async function shutdown(signal: string): Promise<void> {
 process.once("SIGINT", () => { void shutdown("SIGINT"); });
 process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
 
-client.login(config.DISCORD_TOKEN).catch((error: unknown) => { logger.error("gateway login failed", { error: error instanceof Error ? error.message : "unknown" }); db.close(); process.exitCode = 1; });
+client.login(config.DISCORD_TOKEN).catch((error: unknown) => {
+  logger.error("gateway login failed", { error: error instanceof Error ? error.message : "unknown" });
+  // 認証失敗後もワーカーを残すと、閉じたDBへアクセスして二次障害になるため即時停止する。
+  clearInterval(timer);
+  client.destroy();
+  db.close();
+  process.exitCode = 1;
+});
