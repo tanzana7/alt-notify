@@ -1,0 +1,11 @@
+services:
+  discord-alt-notify:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - discord_alt_notify_data:/app/data
+    stop_grace_period: 30s
+
+volumes:
+  discord_alt_notify_data:
