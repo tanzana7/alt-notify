@@ -248,6 +248,20 @@ describe("watch and notification flow", () => {
     expect((db.raw.prepare("SELECT COUNT(*) AS count FROM notification_queue WHERE status='failed'").get() as { count: number }).count).toBe(50);
   });
 
+  it("prioritizes a direct mention over pending everyone notifications and records the eviction", async () => {
+    const { accounts, notifications, db } = await setup(undefined, 5, { maxPendingPerMain: 2, minIntervalMs: 0 });
+    await registerMain(accounts); await link(accounts, "main", "a", "a");
+    const visibility = { isMember: async () => true, canViewChannel: async () => true };
+    await notifications.inspect({ id: "everyone-1", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: [], mentionEveryone: true }, visibility);
+    await notifications.inspect({ id: "everyone-2", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: [], mentionEveryone: true }, visibility);
+    await notifications.inspect({ id: "direct-priority", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, visibility);
+    expect((db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='direct-priority'").get() as { status: string }).status).toBe("pending");
+    expect((db.raw.prepare("SELECT last_error FROM notification_queue WHERE message_id='everyone-2'").get() as { last_error: string }).last_error).toBe("evicted by direct mention priority");
+    const sent: string[] = [];
+    expect(await notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 61_000, 1)).toEqual({ sent: 1, failed: 0 });
+    expect(sent[0]).toContain("直接メンション");
+  });
+
   it("cancels pending notifications on unlink and survives a database reopen", async () => {
     const state = await setup();
     await registerMain(state.accounts); await link(state.accounts, "main", "a", "a"); await state.watches.set("guild", "a", true, { isMember: async () => true });
@@ -268,6 +282,22 @@ describe("watch and notification flow", () => {
     await notifications.inspect({ id: "partial-unlink", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a", "b"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true });
     expect(accounts.unlink("main", "a")).toBe(1);
     expect((db.raw.prepare("SELECT status, target_user_ids FROM notification_queue WHERE message_id='partial-unlink'").get() as { status: string; target_user_ids: string })).toMatchObject({ status: "pending", target_user_ids: '["b"]' });
+  });
+
+  it("recovers a processing notification after a database reopen", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 });
+    await registerMain(state.accounts); await link(state.accounts, "main", "a", "a");
+    await state.notifications.inspect({ id: "restart-queue", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true });
+    state.db.raw.prepare("UPDATE notification_queue SET status='processing' WHERE message_id='restart-queue'").run();
+    const dbPath = path.join(state.dir, "test.sqlite"); state.db.close();
+    const reopened = await SqliteDatabase.open(dbPath);
+    reopened.cleanup();
+    const reopenedAccounts = new AccountService(reopened);
+    const reopenedNotifications = new NotificationService(reopened, reopenedAccounts, new Logger("error"), () => 2_000, { minIntervalMs: 0 });
+    const sent: string[] = [];
+    expect(await reopenedNotifications.drain({ send: async (_id, content) => { sent.push(content); } }, 2_000)).toEqual({ sent: 1, failed: 0 });
+    expect(sent[0]).toContain("直接メンション");
+    reopened.close();
   });
 
   it("persists a link after closing and reopening SQLite", async () => {

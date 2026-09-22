@@ -46,7 +46,19 @@ export class NotificationService {
         const availableAt = this.now() + (group.kind === "everyone" ? 60_000 : 0);
         const pendingCount = Number((this.db.raw.prepare("SELECT COUNT(*) AS count FROM notification_queue WHERE main_user_id=? AND status IN ('pending','processing')").get(group.mainUserId) as { count: number }).count);
         const maxPending = this.options.maxPendingPerMain ?? 200;
-        if (pendingCount >= maxPending) {
+        let effectivePendingCount = pendingCount;
+        if (group.kind === "direct" && pendingCount >= maxPending) {
+          // Direct mentions are actionable and should not be blocked by a burst
+          // of delayed everyone mentions. Only a still-pending everyone row can
+          // be displaced; a processing row is already in the send path.
+          const evicted = this.db.raw.prepare("SELECT id FROM notification_queue WHERE main_user_id=? AND kind='everyone' AND status='pending' ORDER BY id DESC LIMIT 1").get(group.mainUserId) as { id: number } | undefined;
+          if (evicted) {
+            this.db.raw.prepare("UPDATE notification_queue SET status='failed', last_error='evicted by direct mention priority' WHERE id=? AND status='pending'").run(evicted.id);
+            effectivePendingCount--;
+            this.logger.warn("everyone notification evicted for direct mention priority", { mainUserId: group.mainUserId, evictedQueueId: evicted.id });
+          }
+        }
+        if (effectivePendingCount >= maxPending) {
           this.db.raw.prepare("INSERT INTO notification_queue(main_user_id, message_id, guild_id, channel_id, kind, target_user_ids, target_labels, status, last_error, available_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?)").run(group.mainUserId, message.id, message.guildId, message.channelId ?? "", group.kind, JSON.stringify(group.targetUserIds), JSON.stringify(group.targetLabels), "notification queue capacity exceeded", availableAt, this.now());
           this.logger.warn("notification queue capacity exceeded", { mainUserId: group.mainUserId, maxPending });
           return true;
@@ -60,7 +72,7 @@ export class NotificationService {
   }
 
   public async drain(sender: NotificationSender, now = this.now(), max = 50, authorization?: NotificationAuthorization): Promise<{ sent: number; failed: number }> {
-    const rows = this.db.raw.prepare("SELECT * FROM notification_queue WHERE status='pending' AND available_at<=? ORDER BY id LIMIT ?").all(now, max) as Array<Record<string, unknown>>;
+    const rows = this.db.raw.prepare("SELECT * FROM notification_queue WHERE status='pending' AND available_at<=? ORDER BY CASE WHEN kind='direct' THEN 0 ELSE 1 END, id LIMIT ?").all(now, max) as Array<Record<string, unknown>>;
     let sent = 0; let failed = 0;
     for (const row of rows) {
       const lastSentAt = this.lastSentAt.get(String(row.main_user_id));
