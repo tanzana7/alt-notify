@@ -9,7 +9,7 @@ Discord公式Bot APIだけを使い、連携したサブアカウントへのメ
 - Vitest
 - Docker Compose（Node公式イメージのLinux ARM64マルチアーキテクチャを利用）
 
-SQLiteはサービス起動時にファイルを読み込み、変更のたびに同じファイルへ保存します。単一BotプロセスのMVP向けで、将来は `src/db.ts` のアダプタをD1等へ差し替えられます。
+SQLiteはサービス起動時にファイルを読み込み、変更のたびに同一ディレクトリ内の一時ファイルから原子的に保存します。単一BotプロセスのMVP向けで、将来は `src/db.ts` のアダプタをD1等へ差し替えられます。
 
 ## ローカル起動
 
@@ -49,6 +49,8 @@ npm start
 | `OWNER_DISCORD_ID` | 任意 | `/admin-stats`を使える管理者ID |
 | `DATABASE_PATH` | 任意 | SQLiteファイル。既定は`./data/discord-alt-notify.sqlite` |
 | `FREE_LINK_LIMIT` | 任意 | Freeプランのサブアカウント連携上限。テスト期間中の既定値は`5` |
+| `MAX_PENDING_PER_MAIN` | 任意 | メインアカウントごとの未送信キュー上限。既定値は`200` |
+| `DM_MIN_INTERVAL_MS` | 任意 | 同一メインアカウントへのDM最小間隔。既定値は`1000`ミリ秒 |
 | `LOG_LEVEL` | 任意 | `debug` / `info` / `warn` / `error` |
 | `DEVELOPER_TEST_DISCORD_ID` | 任意 | 5アカウント枠を持つ開発者テストID |
 | `LINK_CODE_PEPPER` | 任意 | 連携コードハッシュ用の秘密値。設定後は保持 |
@@ -72,11 +74,12 @@ DMでSlash Commandを使えない場合は、Botとユーザーが共通で参�
 - 同一メッセージで複数サブアカウントが対象なら1通にまとめます。
 - Bot自身の投稿、DM、明示的な監視OFF、サーバー脱退、対象ユーザーがメンバーでない場合、チャンネル閲覧権限を確認できない場合は転送しません。
 - 監視設定が未作成のサーバーは自動監視ONとして扱い、`enabled=0`の行だけを明示的OFFとして扱います。メンバー確認は個別取得と短時間キャッシュを使い、全メンバー一括取得は行いません。
-- DM送信は最大3回（Discordの`retryAfter`がある429相当だけ待機）で、失敗はDBに記録して無限再試行しません。
+- DM送信は最大3回（429と一時的な5xxを指数バックオフ）で、失敗はDBに記録して無限再試行しません。
+- キュー取得は条件付き更新で1件だけを所有し、送信直前に連携・監視OFF・サーバー所属・チャンネル閲覧権限を再確認します。
 - `allowedMentions: { parse: [] }`を指定し、通知先や第三者を再メンションしません。
 - 本文、添付、ロールメンションは扱いません。`@everyone`と`@here`は、本文を読まずGatewayの全体メンションフラグを「全体メンション」として扱います。
 
-## Docker / Oracle Cloud Ampere A1
+## Docker / Oracle Cloud
 
 Dockerが使える環境で次を実行します。
 
@@ -87,7 +90,7 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-`.env`はサーバー上で作成し、イメージへコピーしません。SQLiteはComposeボリュームに保存され、コンテナ停止時はSIGTERMを受けてGatewayを切断し、DBを書き出してから終了します。本リポジトリではSSH接続情報が提供されていないため、Oracleへの実デプロイは行っていません。
+`.env`はサーバー上で作成し、イメージへコピーしません。SQLiteはComposeボリュームに保存され、コンテナ停止時はSIGTERMを受けてGatewayを切断し、DBを書き出してから終了します。Oracle Cloudの本番運用手順は `docs/OPERATIONS.md` を参照してください。
 
 ## バックアップ・復元
 
@@ -106,4 +109,4 @@ docker compose start
 - テスト期間中のFreeはサブアカウント5個（`FREE_LINK_LIMIT`で変更可能）、開発者テストIDとPro枠は従来どおり5個です。Proの決済は未実装です。
 - ロールメンション、OAuth2、Web管理画面、課金、過去メッセージ取得は未実装です。
 - Gateway切断中のイベントを完全回収できない場合があります。
-- 本番公開前に、監査ログの運用、DBバックアップの自動化、送信状態の監視、正式な課金・プラン変更処理、スケール時のDB移行を追加してください。
+- 公開前の監査結果、バックアップ、障害対応は `docs/SECURITY_AUDIT.md`、`docs/OPERATIONS.md`、`docs/INCIDENT_RESPONSE.md` に記録しています。

@@ -1,0 +1,12 @@
+[Unit]
+Description=AltNoti SQLite backup
+After=alt-notify.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/altnoti-backup
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/altnoti/backups

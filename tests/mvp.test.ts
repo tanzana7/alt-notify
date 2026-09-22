@@ -12,12 +12,12 @@ import { canUseAdminStats } from "../src/services/permissions.js";
 
 const resources: Array<{ db: SqliteDatabase; dir: string }> = [];
 
-async function setup(developerTestId?: string, freeLinkLimit = 5) {
+async function setup(developerTestId?: string, freeLinkLimit = 5, notificationOptions: { maxPendingPerMain?: number; minIntervalMs?: number } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "discord-alt-notify-"));
   const db = await SqliteDatabase.open(path.join(dir, "test.sqlite"));
   const accounts = new AccountService(db, developerTestId, "test-pepper", freeLinkLimit);
   const watches = new WatchService(db, accounts);
-  const notifications = new NotificationService(db, accounts, new Logger("error"), () => 1_000);
+  const notifications = new NotificationService(db, accounts, new Logger("error"), () => 1_000, notificationOptions);
   resources.push({ db, dir });
   return { db, dir, accounts, watches, notifications };
 }
@@ -217,6 +217,37 @@ describe("watch and notification flow", () => {
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM notification_queue WHERE status='failed'").get()?.count).toBe(1);
   });
 
+  it("rechecks watch and membership authorization immediately before sending", async () => {
+    const { accounts, watches, notifications, db } = await setup();
+    await registerMain(accounts); await link(accounts, "main", "a", "a");
+    await notifications.inspect({ id: "late-check", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true });
+    await watches.set("guild", "a", false, { isMember: async () => true });
+    const sent: string[] = [];
+    expect(await notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 2_000, 50, { authorize: async () => [] })).toEqual({ sent: 0, failed: 0 });
+    expect(sent).toHaveLength(0);
+    expect((db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='late-check'").get() as { status: string }).status).toBe("cancelled");
+  });
+
+  it("records queue pressure instead of allowing unbounded pending growth", async () => {
+    const { accounts, notifications, db } = await setup(undefined, 5, { maxPendingPerMain: 1 });
+    await registerMain(accounts); await link(accounts, "main", "a", "a");
+    const visibility = { isMember: async () => true, canViewChannel: async () => true };
+    expect(await notifications.inspect({ id: "capacity-1", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, visibility)).toBe(1);
+    expect(await notifications.inspect({ id: "capacity-2", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, visibility)).toBe(1);
+    expect((db.raw.prepare("SELECT status, last_error FROM notification_queue WHERE message_id='capacity-2'").get() as { status: string; last_error: string })).toMatchObject({ status: "failed", last_error: "notification queue capacity exceeded" });
+  });
+
+  it("keeps a bounded queue under a local mock burst", async () => {
+    const { accounts, notifications, db } = await setup();
+    await registerMain(accounts); await link(accounts, "main", "a", "a");
+    const visibility = { isMember: async () => true, canViewChannel: async () => true };
+    for (let index = 0; index < 250; index++) {
+      await notifications.inspect({ id: `burst-${index}`, guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, visibility);
+    }
+    expect((db.raw.prepare("SELECT COUNT(*) AS count FROM notification_queue WHERE status='pending'").get() as { count: number }).count).toBe(200);
+    expect((db.raw.prepare("SELECT COUNT(*) AS count FROM notification_queue WHERE status='failed'").get() as { count: number }).count).toBe(50);
+  });
+
   it("cancels pending notifications on unlink and survives a database reopen", async () => {
     const state = await setup();
     await registerMain(state.accounts); await link(state.accounts, "main", "a", "a"); await state.watches.set("guild", "a", true, { isMember: async () => true });
@@ -229,6 +260,14 @@ describe("watch and notification flow", () => {
     const accounts = new AccountService(reopened);
     expect(accounts.getStatus("main").kind).toBe("main");
     reopened.close();
+  });
+
+  it("removes only the unlinked target from a grouped pending notification", async () => {
+    const { accounts, notifications, db } = await setup();
+    await registerMain(accounts); await link(accounts, "main", "a", "a"); await link(accounts, "main", "b", "b");
+    await notifications.inspect({ id: "partial-unlink", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a", "b"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true });
+    expect(accounts.unlink("main", "a")).toBe(1);
+    expect((db.raw.prepare("SELECT status, target_user_ids FROM notification_queue WHERE message_id='partial-unlink'").get() as { status: string; target_user_ids: string })).toMatchObject({ status: "pending", target_user_ids: '["b"]' });
   });
 
   it("persists a link after closing and reopening SQLite", async () => {

@@ -6,10 +6,12 @@ import {
   Client,
   Events,
   GatewayIntentBits,
+  MessageFlags,
   Partials,
   PermissionFlagsBits,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
+  type GuildBasedChannel,
   type GuildMember,
   type Message
 } from "discord.js";
@@ -27,9 +29,10 @@ import { MemberCache } from "./services/member-cache.js";
 const config = loadConfig();
 const logger = new Logger(config.LOG_LEVEL);
 const db = await SqliteDatabase.open(config.DATABASE_PATH);
+db.cleanup();
 const accounts = new AccountService(db, config.DEVELOPER_TEST_DISCORD_ID, config.LINK_CODE_PEPPER, config.FREE_LINK_LIMIT);
 const watches = new WatchService(db, accounts);
-const notifications = new NotificationService(db, accounts, logger);
+const notifications = new NotificationService(db, accounts, logger, () => Date.now(), { maxPendingPerMain: config.MAX_PENDING_PER_MAIN, minIntervalMs: config.DM_MIN_INTERVAL_MS });
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages],
   partials: [Partials.Channel]
@@ -40,7 +43,7 @@ const memberCache = new MemberCache<GuildMember>(5_000);
 function privateReply(interaction: ChatInputCommandInteraction | ButtonInteraction, content: string, components?: ActionRowBuilder<ButtonBuilder>[]): Promise<unknown> {
   const message = { content, ...(components ? { components } : {}) };
   if (interaction.replied || interaction.deferred) return interaction.editReply(message);
-  return interaction.reply({ ...message, ...(interaction.inGuild() ? { ephemeral: true } : {}) });
+  return interaction.reply({ ...message, ...(interaction.inGuild() ? { flags: MessageFlags.Ephemeral } : {}) });
 }
 
 function memberAccess(message: Message) {
@@ -59,11 +62,39 @@ function memberAccess(message: Message) {
   };
 }
 
+async function authorizeQueuedNotification(input: { mainUserId: string; guildId: string; channelId: string; targetUserIds: string[] }): Promise<Array<{ userId: string; label: string }>> {
+  if (!input.channelId) return [];
+  const guild = client.guilds.cache.get(input.guildId);
+  if (!guild) return [];
+  let channel: GuildBasedChannel | null | undefined = guild.channels.cache.get(input.channelId);
+  if (!channel) {
+    try { channel = await guild.channels.fetch(input.channelId); } catch { return []; }
+  }
+  if (!channel || !("permissionsFor" in channel)) return [];
+  const permissionChannel = channel as unknown as { permissionsFor: (member: GuildMember) => { has: (permission: bigint) => boolean } | null };
+  const activeLinks = accounts.linkedSubsForGuild(input.guildId).filter((link) => link.mainUserId === input.mainUserId && input.targetUserIds.includes(link.subUserId));
+  const authorized: Array<{ userId: string; label: string }> = [];
+  for (const link of activeLinks) {
+    try {
+      // Membership is an authorization boundary. Do not reuse the short-lived
+      // inspection cache here; fetch the current member state immediately before
+      // sending so a recent guild departure cannot receive a queued notification.
+      const member = await guild.members.fetch(link.subUserId);
+      if (!member) continue;
+      const permissions = permissionChannel.permissionsFor(member);
+      if (permissions?.has(PermissionFlagsBits.ViewChannel)) authorized.push({ userId: link.subUserId, label: link.username });
+    } catch {
+      // A departed account or an inaccessible channel is intentionally skipped.
+    }
+  }
+  return authorized;
+}
+
 async function handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   const subcommand = interaction.options.getSubcommand(false);
   try {
     if (interaction.commandName === "main" && subcommand === "set") {
-      await interaction.deferReply({ ephemeral: interaction.inGuild() });
+      await interaction.deferReply(interaction.inGuild() ? { flags: MessageFlags.Ephemeral } : {});
       await accounts.registerMain(interaction.user.id, interaction.user.username, async () => { await interaction.user.send({ content: "メインアカウントの登録を確認しました。", allowedMentions: { parse: [] } }); });
       await interaction.editReply("メインアカウントを登録しました");
       return;
@@ -144,17 +175,21 @@ client.on(Events.MessageCreate, async (message) => {
     if (!message.guild || message.author.bot) return;
     const mentionedUserIds = [...message.mentions.users.keys()];
     const labels = new Map(mentionedUserIds.map((id) => [id, message.mentions.users.get(id)?.globalName ?? message.mentions.users.get(id)?.username ?? id]));
-    await notifications.inspect({ id: message.id, guildId: message.guild.id, authorBot: message.author.bot, mentionedUserIds, mentionEveryone: message.mentions.everyone }, memberAccess(message), labels);
+    await notifications.inspect({ id: message.id, guildId: message.guild.id, channelId: message.channelId, authorBot: message.author.bot, mentionedUserIds, mentionEveryone: message.mentions.everyone }, memberAccess(message), labels);
   } catch (error) { logger.error("message inspection failed", { error: error instanceof Error ? error.message : "unknown" }); }
 });
 
 const timer = setInterval(() => {
-  void notifications.drain({ send: async (mainUserId, content) => { const user = await client.users.fetch(mainUserId); await user.send({ content, allowedMentions: { parse: [] } }); } }).catch((error) => logger.error("notification worker failed", { error: error instanceof Error ? error.message : "unknown" }));
+  void notifications.drain({ send: async (mainUserId, content) => { const user = await client.users.fetch(mainUserId); await user.send({ content, allowedMentions: { parse: [] } }); } }, Date.now(), 50, { authorize: authorizeQueuedNotification }).catch((error) => logger.error("notification worker failed", { error: error instanceof Error ? error.message : "unknown" }));
 }, 5_000);
+const cleanupTimer = setInterval(() => {
+  try { db.cleanup(Date.now(), false); } catch (error) { logger.error("database cleanup failed", { error: error instanceof Error ? error.message : "unknown" }); }
+}, 60 * 60 * 1_000);
 
 async function shutdown(signal: string): Promise<void> {
   logger.info("shutting down", { signal });
   clearInterval(timer);
+  clearInterval(cleanupTimer);
   client.destroy();
   db.close();
 }
@@ -165,6 +200,7 @@ client.login(config.DISCORD_TOKEN).catch((error: unknown) => {
   logger.error("gateway login failed", { error: error instanceof Error ? error.message : "unknown" });
   // 認証失敗後もワーカーを残すと、閉じたDBへアクセスして二次障害になるため即時停止する。
   clearInterval(timer);
+  clearInterval(cleanupTimer);
   client.destroy();
   db.close();
   process.exitCode = 1;

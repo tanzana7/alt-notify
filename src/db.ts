@@ -61,7 +61,11 @@ export class SqliteDatabase {
     fs.mkdirSync(path.dirname(path.resolve(filePath)), { recursive: true });
     this.raw = new SqliteFacade(database, () => {
       const bytes = database.export();
-      fs.writeFileSync(filePath, Buffer.from(bytes));
+      // sql.js exports the complete database. Rename a sibling temporary file
+      // so a process crash cannot leave a half-written SQLite file.
+      const temporaryPath = `${filePath}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
+      fs.writeFileSync(temporaryPath, Buffer.from(bytes), { mode: 0o600 });
+      fs.renameSync(temporaryPath, filePath);
     });
     this.raw.pragma("foreign_keys = ON");
     this.migrate();
@@ -96,7 +100,7 @@ export class SqliteDatabase {
       );
       CREATE TABLE IF NOT EXISTS notification_queue (
         id INTEGER PRIMARY KEY AUTOINCREMENT, main_user_id TEXT NOT NULL REFERENCES main_accounts(user_id) ON DELETE CASCADE,
-        message_id TEXT NOT NULL, guild_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('direct', 'everyone')),
+        message_id TEXT NOT NULL, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL CHECK(kind IN ('direct', 'everyone')),
         target_user_ids TEXT NOT NULL, target_labels TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'sent', 'failed', 'cancelled')),
         attempts INTEGER NOT NULL DEFAULT 0, available_at INTEGER NOT NULL, last_error TEXT, created_at INTEGER NOT NULL, sent_at INTEGER
@@ -107,12 +111,14 @@ export class SqliteDatabase {
       CREATE INDEX IF NOT EXISTS idx_watches_guild ON guild_watches(guild_id, enabled);
       CREATE INDEX IF NOT EXISTS idx_link_codes_expiry ON link_codes(expires_at);
     `);
+    const queueColumns = this.raw.prepare("PRAGMA table_info(notification_queue)").all().map((row) => String(row.name));
+    if (!queueColumns.includes("channel_id")) this.raw.exec("ALTER TABLE notification_queue ADD COLUMN channel_id TEXT NOT NULL DEFAULT ''");
   }
 
-  public cleanup(now = Date.now()): void {
+  public cleanup(now = Date.now(), recoverProcessing = true): void {
     this.raw.prepare("DELETE FROM link_codes WHERE expires_at < ? OR used_at IS NOT NULL").run(now);
     this.raw.prepare("DELETE FROM notification_dedup WHERE created_at < ?").run(now - 7 * 24 * 60 * 60 * 1000);
-    this.raw.prepare("DELETE FROM notification_queue WHERE status IN ('sent', 'cancelled') AND created_at < ?").run(now - 7 * 24 * 60 * 60 * 1000);
-    this.raw.prepare("UPDATE notification_queue SET status = 'pending' WHERE status = 'processing'").run();
+    this.raw.prepare("DELETE FROM notification_queue WHERE status IN ('sent', 'failed', 'cancelled') AND created_at < ?").run(now - 7 * 24 * 60 * 60 * 1000);
+    if (recoverProcessing) this.raw.prepare("UPDATE notification_queue SET status = 'pending' WHERE status = 'processing'").run();
   }
 }
