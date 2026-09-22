@@ -27,7 +27,7 @@ import { MemberCache } from "./services/member-cache.js";
 const config = loadConfig();
 const logger = new Logger(config.LOG_LEVEL);
 const db = await SqliteDatabase.open(config.DATABASE_PATH);
-const accounts = new AccountService(db, config.DEVELOPER_TEST_DISCORD_ID, config.LINK_CODE_PEPPER);
+const accounts = new AccountService(db, config.DEVELOPER_TEST_DISCORD_ID, config.LINK_CODE_PEPPER, config.FREE_LINK_LIMIT);
 const watches = new WatchService(db, accounts);
 const notifications = new NotificationService(db, accounts, logger);
 const client = new Client({

@@ -6,7 +6,7 @@ export interface AccountStatus { kind: "main" | "sub" | "none"; mainUserId?: str
 
 export class AccountService {
   private readonly failedCodeAttempts = new Map<string, { since: number; count: number }>();
-  public constructor(private readonly db: SqliteDatabase, private readonly developerTestId?: string, private readonly pepper = "") {}
+  public constructor(private readonly db: SqliteDatabase, private readonly developerTestId?: string, private readonly pepper = "", private readonly freeLinkLimit = 5) {}
 
   public registerMain(userId: string, username: string, testDm: () => Promise<void>, now = Date.now()): Promise<void> {
     return testDm().then(() => {
@@ -52,7 +52,8 @@ export class AccountService {
       this.validateCode(row, subUserId, now);
       const count = (this.db.raw.prepare("SELECT COUNT(*) AS count FROM account_links WHERE main_user_id=?").get(row.mainUserId) as { count: number }).count;
       const entitlement = this.db.raw.prepare("SELECT plan FROM entitlements WHERE user_id=?").get(row.mainUserId) as { plan: Plan } | undefined;
-      const limit = entitlement?.plan === "developer_test" || entitlement?.plan === "pro" ? 5 : 1;
+      // Proと開発者テスト枠は従来どおり5。テスト期間中に変更するのはFreeだけ。
+      const limit = entitlement?.plan === "developer_test" || entitlement?.plan === "pro" ? 5 : this.freeLinkLimit;
       if (count >= limit) throw new Error("連携可能なサブアカウント数の上限に達しています");
       this.db.raw.prepare("INSERT INTO account_links(sub_user_id, main_user_id, username, created_at) VALUES (?, ?, ?, ?)").run(subUserId, row.mainUserId, username, now);
       this.db.raw.prepare("UPDATE link_codes SET used_at=? WHERE code_hash=? AND used_at IS NULL").run(now, codeHash);

@@ -12,10 +12,10 @@ import { canUseAdminStats } from "../src/services/permissions.js";
 
 const resources: Array<{ db: SqliteDatabase; dir: string }> = [];
 
-async function setup(developerTestId?: string) {
+async function setup(developerTestId?: string, freeLinkLimit = 5) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "discord-alt-notify-"));
   const db = await SqliteDatabase.open(path.join(dir, "test.sqlite"));
-  const accounts = new AccountService(db, developerTestId, "test-pepper");
+  const accounts = new AccountService(db, developerTestId, "test-pepper", freeLinkLimit);
   const watches = new WatchService(db, accounts);
   const notifications = new NotificationService(db, accounts, new Logger("error"), () => 1_000);
   resources.push({ db, dir });
@@ -55,16 +55,24 @@ describe("account lifecycle", () => {
     expect(() => accounts.approveLinkByHash("other", accounts.hashForApproval(fresh), "other", 700_003)).toThrow("無効");
   });
 
-  it("limits free users to one and developer test users to five", async () => {
+  it("allows five free links and rejects the sixth while preserving the developer five-link limit", async () => {
     const free = await setup();
     await registerMain(free.accounts);
-    await link(free.accounts, "main", "a");
+    for (const sub of ["a", "b", "c", "d", "e"]) await link(free.accounts, "main", sub);
+    expect(free.accounts.getStatus("main").links).toHaveLength(5);
     const code = free.accounts.issueLinkCode("main", 2_000);
-    expect(() => free.accounts.approveLinkByHash("b", free.accounts.hashForApproval(code), "b", 2_001)).toThrow("上限");
+    expect(() => free.accounts.approveLinkByHash("f", free.accounts.hashForApproval(code), "f", 2_001)).toThrow("上限");
     const dev = await setup("dev");
     await registerMain(dev.accounts, "dev", "developer");
     for (const sub of ["a", "b", "c", "d", "e"]) await link(dev.accounts, "dev", sub);
     expect(dev.accounts.getStatus("dev").links).toHaveLength(5);
+  });
+
+  it("can be configured back to a one-link Free limit", async () => {
+    const state = await setup(undefined, 1);
+    await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    const code = state.accounts.issueLinkCode("main", 2_000);
+    expect(() => state.accounts.approveLinkByHash("b", state.accounts.hashForApproval(code), "b", 2_001)).toThrow("上限");
   });
 
   it("allows only the requesting user to consume an approval button", async () => {

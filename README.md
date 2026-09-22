@@ -48,6 +48,7 @@ npm start
 | `DISCORD_DEV_GUILD_ID` | 任意 | 開発用サーバーID |
 | `OWNER_DISCORD_ID` | 任意 | `/admin-stats`を使える管理者ID |
 | `DATABASE_PATH` | 任意 | SQLiteファイル。既定は`./data/discord-alt-notify.sqlite` |
+| `FREE_LINK_LIMIT` | 任意 | Freeプランのサブアカウント連携上限。テスト期間中の既定値は`5` |
 | `LOG_LEVEL` | 任意 | `debug` / `info` / `warn` / `error` |
 | `DEVELOPER_TEST_DISCORD_ID` | 任意 | 5アカウント枠を持つ開発者テストID |
 | `LINK_CODE_PEPPER` | 任意 | 連携コードハッシュ用の秘密値。設定後は保持 |
@@ -102,7 +103,7 @@ docker compose start
 
 ## MVPの制限と今後
 
-- Freeはサブアカウント1個、開発者テストIDだけ5個です。Proの決済は未実装です。
+- テスト期間中のFreeはサブアカウント5個（`FREE_LINK_LIMIT`で変更可能）、開発者テストIDとPro枠は従来どおり5個です。Proの決済は未実装です。
 - ロールメンション、OAuth2、Web管理画面、課金、過去メッセージ取得は未実装です。
 - Gateway切断中のイベントを完全回収できない場合があります。
 - 本番公開前に、監査ログの運用、DBバックアップの自動化、送信状態の監視、正式な課金・プラン変更処理、スケール時のDB移行を追加してください。

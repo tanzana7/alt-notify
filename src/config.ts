@@ -6,6 +6,7 @@ const envSchema = z.object({
   DISCORD_DEV_GUILD_ID: z.string().optional(),
   OWNER_DISCORD_ID: z.string().optional(),
   DATABASE_PATH: z.string().default("./data/discord-alt-notify.sqlite"),
+  FREE_LINK_LIMIT: z.coerce.number().int().min(1).max(100).default(5),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   DEVELOPER_TEST_DISCORD_ID: z.string().optional(),
   LINK_CODE_PEPPER: z.string().optional()
