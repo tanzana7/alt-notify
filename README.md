@@ -51,6 +51,10 @@ npm start
 | `FREE_LINK_LIMIT` | 任意 | Freeプランのサブアカウント連携上限。テスト期間中の既定値は`5` |
 | `MAX_PENDING_PER_MAIN` | 任意 | メインアカウントごとの未送信キュー上限。既定値は`200` |
 | `DM_MIN_INTERVAL_MS` | 任意 | 同一メインアカウントへのDM最小間隔。既定値は`1000`ミリ秒 |
+| `HEALTHCHECKS_HEARTBEAT_URL` | 任意 | HealthchecksのHTTPS heartbeat URL。未設定時は外部送信なし |
+| `HEALTHCHECKS_HEARTBEAT_INTERVAL_MS` | 任意 | heartbeat間隔。既定値は`60000`ミリ秒 |
+| `HEALTHCHECKS_MAX_PENDING_QUEUE` | 任意 | heartbeatをfailにするpending/processing件数。既定値は`200` |
+| `HEALTHCHECKS_MAX_FAILURES_15M` | 任意 | 直近15分でheartbeatをfailにする失敗件数。既定値は`5` |
 | `LOG_LEVEL` | 任意 | `debug` / `info` / `warn` / `error` |
 | `DEVELOPER_TEST_DISCORD_ID` | 任意 | 5アカウント枠を持つ開発者テストID |
 | `LINK_CODE_PEPPER` | 任意 | 連携コードハッシュ用の秘密値。設定後は保持 |
@@ -103,6 +107,10 @@ docker compose start
 ```
 
 復元時は停止後に同じファイルをデータボリュームへ戻し、`docker compose up -d`します。変更直後のプロセスクラッシュでは、DM送信直後にDB状態を書き込めない短い窓があるため、完全なexactly-once送信は保証しません。未送信キューは再起動時に復旧します。
+
+## 本番の秘密情報更新・外部監視
+
+Bot Tokenはチャットへ貼り付けず、Windows PowerShellで`deploy/rotate-token.ps1`を実行して非表示入力します。Healthchecksの秘密URLは`deploy/configure-healthcheck.ps1`へ非表示入力します。両スクリプトともSSHの標準入力でOracleへ渡し、環境ファイルを原子的に更新してGateway readyを確認します。入力値はログ、Git、画面出力へ出しません。
 
 ## MVPの制限と今後
 

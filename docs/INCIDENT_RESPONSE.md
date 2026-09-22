@@ -37,6 +37,12 @@ Gateway切断中に発生したDiscordイベントは回収できない場合が
 
 これはP0として扱う。Discord Developer PortalでBot TokenをResetし、旧トークンを無効化する。新トークンを`/etc/altnoti.env`へ安全に反映し、権限を`root:altnoti 640`へ戻してsystemdを再起動する。Git、ログ、バックアップ、チャットにトークンが残っていないか確認し、外部へ流出した可能性があれば関係者へ通知する。値そのものを確認表示しない。
 
+更新は`deploy/rotate-token.ps1`を使う。Tokenを引数、環境変数、チャットに置かない。スクリプトは入力失敗時に旧環境を戻し、Gateway readyを確認できない場合もロールバックする。
+
+## 外部heartbeat停止
+
+Healthchecksの期限切れは、VM停止、Gateway切断、またはBotプロセス停止の候補である。OracleへSSH接続できる場合はsystemd、Gatewayログ、pending/processing/failed件数を確認する。Gatewayがreadyでもキュー閾値超過や失敗増加時は`/fail`通知を送るため、Discord側の通知障害と区別して調査する。heartbeat URLは秘密情報として扱い、ログに出さない。
+
 ## 誤通知・通知停止
 
 - 連携解除または`/watch off`が送信直前の認可で反映されるか確認する。

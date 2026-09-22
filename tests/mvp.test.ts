@@ -9,6 +9,7 @@ import { WatchService } from "../src/services/watches.js";
 import { NotificationService } from "../src/services/notifications.js";
 import { Logger } from "../src/logger.js";
 import { canUseAdminStats } from "../src/services/permissions.js";
+import { HealthcheckService } from "../src/services/healthcheck.js";
 
 const resources: Array<{ db: SqliteDatabase; dir: string }> = [];
 
@@ -113,6 +114,26 @@ describe("account lifecycle", () => {
 });
 
 describe("watch and notification flow", () => {
+  it("does not send a success heartbeat while Gateway is unavailable", async () => {
+    const { db } = await setup();
+    const requests: string[] = [];
+    const healthcheck = new HealthcheckService(db, new Logger("error"), "https://healthchecks.example/test", 200, 5, async (url) => { requests.push(url); return true; });
+    await expect(healthcheck.check(false)).resolves.toMatchObject({ healthy: false, requestSent: false, reason: "gateway_not_ready" });
+    expect(requests).toHaveLength(0);
+  });
+
+  it("sends a heartbeat only for a healthy queue and fail-pings threshold breaches", async () => {
+    const { db, accounts, notifications } = await setup();
+    await registerMain(accounts); await link(accounts, "main", "a", "a");
+    await notifications.inspect({ id: "health-pending", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true });
+    const requests: string[] = [];
+    const healthy = new HealthcheckService(db, new Logger("error"), "https://healthchecks.example/test", 2, 5, async (url) => { requests.push(url); return true; });
+    await expect(healthy.check(true)).resolves.toMatchObject({ healthy: true, requestSent: true, reason: "ok" });
+    expect(requests).toEqual(["https://healthchecks.example/test"]);
+    const overloaded = new HealthcheckService(db, new Logger("error"), "https://healthchecks.example/test", 1, 5, async (url) => { requests.push(url); return true; });
+    await expect(overloaded.check(true)).resolves.toMatchObject({ healthy: false, requestSent: true, reason: "queue_or_failure_threshold" });
+    expect(requests[1]).toBe("https://healthchecks.example/test/fail");
+  });
   it("does not enqueue from a watch that is off", async () => {
     const { accounts, watches, notifications, db } = await setup();
     await registerMain(accounts); await link(accounts, "main", "a", "a");

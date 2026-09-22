@@ -11,7 +11,11 @@ const envSchema = z.object({
   DM_MIN_INTERVAL_MS: z.coerce.number().int().min(0).max(60_000).default(1_000),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   DEVELOPER_TEST_DISCORD_ID: z.string().optional(),
-  LINK_CODE_PEPPER: z.string().optional()
+  LINK_CODE_PEPPER: z.string().optional(),
+  HEALTHCHECKS_HEARTBEAT_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().refine((value) => value.startsWith("https://"), "HTTPS URLが必要です").optional()),
+  HEALTHCHECKS_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().min(30_000).max(3_600_000).default(60_000),
+  HEALTHCHECKS_MAX_PENDING_QUEUE: z.coerce.number().int().min(1).max(100_000).default(200),
+  HEALTHCHECKS_MAX_FAILURES_15M: z.coerce.number().int().min(1).max(10_000).default(5)
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

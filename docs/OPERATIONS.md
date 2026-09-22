@@ -10,6 +10,7 @@
 - systemd: `alt-notify.service`
 - ログ: `journalctl -u alt-notify.service`
 - バックアップ: `altnoti-backup.timer`（毎日、最新7世代）
+- 外部監視: 任意のHealthchecks heartbeat（URL設定後のみ有効）
 
 BotはNode.js＋systemdで動作させる。1GB VMではDocker常駐のオーバーヘッドを避け、Nodeプロセスのメモリ上限をsystemdの`MemoryMax`で制御する。Windows版Botは本番稼働中に起動しない。
 
@@ -55,6 +56,27 @@ sudo systemctl start alt-notify.service
 6. `status`、Gateway ready、DB整合性、既存連携、pendingキューを確認。
 
 環境変数の変更時は `/etc/altnoti.env`を直接ログ出力せず、必要なキー名だけをレビューする。Freeのテスト上限は`FREE_LINK_LIMIT=5`で、将来戻す場合は値だけを`1`へ変更してサービスを再起動する。
+
+## Token更新
+
+Discord Developer PortalでTokenを再発行した後、Token自体をチャットへ送らず、Windows上で次を実行する。
+
+```powershell
+.\deploy\rotate-token.ps1
+```
+
+入力は非表示。スクリプトはOracleでバックアップ、環境ファイルの原子更新、systemd再起動、Gateway ready確認を行う。失敗時は更新前の環境ファイルへ戻してサービスを再起動する。
+
+## Healthchecks設定
+
+1. Healthchecks.ioでheartbeat checkを作成する。通知先、失敗猶予、通知頻度はHealthchecks側で設定する。
+2. URLをチャットへ貼らず、Windows上で次を実行する。
+
+```powershell
+.\deploy\configure-healthcheck.ps1
+```
+
+Gatewayがreadyで、pending/processingが200未満、直近15分のfailedが5未満の場合だけ成功heartbeatを送る。Gateway未接続時は送信せず、Healthchecks側の期限切れで検知する。閾値を超えた場合は`/fail`を送る。URL未設定時は外部通信しない。
 
 ## Discord実機確認
 

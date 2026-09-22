@@ -25,6 +25,7 @@ import { getStats } from "./services/stats.js";
 import { ApprovalStore } from "./services/approval.js";
 import { canUseAdminStats } from "./services/permissions.js";
 import { MemberCache } from "./services/member-cache.js";
+import { HealthcheckService } from "./services/healthcheck.js";
 
 const config = loadConfig();
 const logger = new Logger(config.LOG_LEVEL);
@@ -33,6 +34,7 @@ db.cleanup();
 const accounts = new AccountService(db, config.DEVELOPER_TEST_DISCORD_ID, config.LINK_CODE_PEPPER, config.FREE_LINK_LIMIT);
 const watches = new WatchService(db, accounts);
 const notifications = new NotificationService(db, accounts, logger, () => Date.now(), { maxPendingPerMain: config.MAX_PENDING_PER_MAIN, minIntervalMs: config.DM_MIN_INTERVAL_MS });
+const healthchecks = new HealthcheckService(db, logger, config.HEALTHCHECKS_HEARTBEAT_URL, config.HEALTHCHECKS_MAX_PENDING_QUEUE, config.HEALTHCHECKS_MAX_FAILURES_15M);
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages],
   partials: [Partials.Channel]
@@ -156,7 +158,10 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
   }
 }
 
-client.once(Events.ClientReady, (ready) => logger.info("gateway ready", { guilds: ready.guilds.cache.size }));
+client.once(Events.ClientReady, (ready) => {
+  logger.info("gateway ready", { guilds: ready.guilds.cache.size });
+  void healthchecks.check(true);
+});
 client.on(Events.ShardDisconnect, (event) => logger.warn("gateway disconnected", { code: event.code }));
 client.on(Events.ShardReconnecting, () => logger.warn("gateway reconnecting"));
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -185,11 +190,13 @@ const timer = setInterval(() => {
 const cleanupTimer = setInterval(() => {
   try { db.cleanup(Date.now(), false); } catch (error) { logger.error("database cleanup failed", { error: error instanceof Error ? error.message : "unknown" }); }
 }, 60 * 60 * 1_000);
+const healthcheckTimer = config.HEALTHCHECKS_HEARTBEAT_URL ? setInterval(() => { void healthchecks.check(client.ws.status === 0); }, config.HEALTHCHECKS_HEARTBEAT_INTERVAL_MS) : undefined;
 
 async function shutdown(signal: string): Promise<void> {
   logger.info("shutting down", { signal });
   clearInterval(timer);
   clearInterval(cleanupTimer);
+  if (healthcheckTimer) clearInterval(healthcheckTimer);
   client.destroy();
   db.close();
 }
@@ -201,6 +208,7 @@ client.login(config.DISCORD_TOKEN).catch((error: unknown) => {
   // 認証失敗後もワーカーを残すと、閉じたDBへアクセスして二次障害になるため即時停止する。
   clearInterval(timer);
   clearInterval(cleanupTimer);
+  if (healthcheckTimer) clearInterval(healthcheckTimer);
   client.destroy();
   db.close();
   process.exitCode = 1;
