@@ -11,7 +11,6 @@ import {
   PermissionFlagsBits,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
-  type GuildBasedChannel,
   type GuildMember,
   type Message
 } from "discord.js";
@@ -27,6 +26,8 @@ import { canUseAdminStats } from "./services/permissions.js";
 import { MemberCache } from "./services/member-cache.js";
 import { HealthcheckService } from "./services/healthcheck.js";
 import { helpText } from "./help.js";
+import { classifyDiscordError } from "./services/discord-errors.js";
+import { authorizeQueuedNotification } from "./services/authorization.js";
 
 const config = loadConfig();
 const logger = new Logger(config.LOG_LEVEL);
@@ -52,46 +53,34 @@ function privateReply(interaction: ChatInputCommandInteraction | ButtonInteracti
 
 function memberAccess(message: Message) {
   const guild = message.guild!;
-  const getMember = (userId: string): Promise<GuildMember | null> => memberCache.get(`${guild.id}:${userId}`, async () => guild.members.cache.get(userId) ?? await guild.members.fetch(userId));
+  const getMember = (userId: string): Promise<GuildMember | null> => memberCache.get(`${guild.id}:${userId}`, async () => {
+    try { return guild.members.cache.get(userId) ?? await guild.members.fetch(userId); }
+    catch (error) {
+      const failure = classifyDiscordError(error, "member");
+      if (failure.kind === "permanent") return null;
+      throw error;
+    }
+  });
   return {
-    isMember: async (userId: string): Promise<boolean> => {
-      return Boolean(await getMember(userId));
+    isMember: async (userId: string) => {
+      try { return Boolean(await getMember(userId)); }
+      catch (error) {
+        const failure = classifyDiscordError(error, "member");
+        return failure.kind === "temporary" ? { kind: "retry" as const, reason: failure.reason, ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}) } : { kind: "denied" as const, reason: failure.reason };
+      }
     },
-    canViewChannel: async (userId: string): Promise<boolean> => {
-      const member = await getMember(userId);
-      if (!member) return false;
-      const permissions = (message.channel as unknown as { permissionsFor: (member: GuildMember) => { has: (permission: bigint) => boolean } | null }).permissionsFor(member);
-      return Boolean(permissions?.has(PermissionFlagsBits.ViewChannel));
+    canViewChannel: async (userId: string) => {
+      try {
+        const member = await getMember(userId);
+        if (!member) return false;
+        const permissions = (message.channel as unknown as { permissionsFor: (member: GuildMember) => { has: (permission: bigint) => boolean } | null }).permissionsFor(member);
+        return Boolean(permissions?.has(PermissionFlagsBits.ViewChannel));
+      } catch (error) {
+        const failure = classifyDiscordError(error, "permission");
+        return failure.kind === "temporary" ? { kind: "retry" as const, reason: failure.reason, ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}) } : { kind: "denied" as const, reason: failure.reason };
+      }
     }
   };
-}
-
-async function authorizeQueuedNotification(input: { mainUserId: string; guildId: string; channelId: string; targetUserIds: string[] }): Promise<Array<{ userId: string; label: string }>> {
-  if (!input.channelId) return [];
-  const guild = client.guilds.cache.get(input.guildId);
-  if (!guild) return [];
-  let channel: GuildBasedChannel | null | undefined = guild.channels.cache.get(input.channelId);
-  if (!channel) {
-    try { channel = await guild.channels.fetch(input.channelId); } catch { return []; }
-  }
-  if (!channel || !("permissionsFor" in channel)) return [];
-  const permissionChannel = channel as unknown as { permissionsFor: (member: GuildMember) => { has: (permission: bigint) => boolean } | null };
-  const activeLinks = accounts.linkedSubsForGuild(input.guildId).filter((link) => link.mainUserId === input.mainUserId && input.targetUserIds.includes(link.subUserId));
-  const authorized: Array<{ userId: string; label: string }> = [];
-  for (const link of activeLinks) {
-    try {
-      // Membership is an authorization boundary. Do not reuse the short-lived
-      // inspection cache here; fetch the current member state immediately before
-      // sending so a recent guild departure cannot receive a queued notification.
-      const member = await guild.members.fetch(link.subUserId);
-      if (!member) continue;
-      const permissions = permissionChannel.permissionsFor(member);
-      if (permissions?.has(PermissionFlagsBits.ViewChannel)) authorized.push({ userId: link.subUserId, label: link.username });
-    } catch {
-      // A departed account or an inaccessible channel is intentionally skipped.
-    }
-  }
-  return authorized;
 }
 
 async function handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -215,7 +204,7 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 const timer = setInterval(() => {
-  void notifications.drain({ send: async (mainUserId, content) => { const user = await client.users.fetch(mainUserId); await user.send({ content, allowedMentions: { parse: [] } }); } }, Date.now(), 50, { authorize: authorizeQueuedNotification }).catch((error) => logger.error("notification worker failed", { error: error instanceof Error ? error.message : "unknown" }));
+  void notifications.drain({ send: async (mainUserId, content) => { const user = await client.users.fetch(mainUserId); await user.send({ content, allowedMentions: { parse: [] } }); } }, Date.now(), 50, { authorize: (input) => authorizeQueuedNotification(client, accounts, input) }).catch((error) => logger.error("notification worker failed", { error: error instanceof Error ? error.message : "unknown" }));
 }, 5_000);
 const cleanupTimer = setInterval(() => {
   try { db.cleanup(Date.now(), false); } catch (error) { logger.error("database cleanup failed", { error: error instanceof Error ? error.message : "unknown" }); }

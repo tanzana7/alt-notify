@@ -12,6 +12,8 @@ import { canUseAdminStats } from "../src/services/permissions.js";
 import { HealthcheckService } from "../src/services/healthcheck.js";
 import { commandDefinitions } from "../src/commands.js";
 import { helpText } from "../src/help.js";
+import { authorizeQueuedNotification } from "../src/services/authorization.js";
+import { classifyDiscordError } from "../src/services/discord-errors.js";
 
 const resources: Array<{ db: SqliteDatabase; dir: string }> = [];
 
@@ -37,6 +39,22 @@ async function link(accounts: AccountService, mainId: string, subId: string, use
   const code = accounts.issueLinkCode(mainId, 1_000);
   accounts.previewLinkCode(subId, code, 1_001);
   return accounts.approveLinkByHash(subId, accounts.hashForApproval(code), username, 1_002);
+}
+
+function mockClient(options: { fetchMember: () => Promise<unknown>; fetchChannel?: () => Promise<unknown>; channel?: unknown }) {
+  const guild = {
+    channels: { cache: { get: () => options.channel }, fetch: options.fetchChannel ?? (async () => options.channel) },
+    members: { fetch: options.fetchMember }
+  };
+  return { guilds: { cache: { get: () => guild } } } as never;
+}
+
+function visibleChannel(hasView = true) {
+  return { permissionsFor: () => ({ has: () => hasView }) };
+}
+
+function authorizedTarget() {
+  return { kind: "authorized" as const, targets: [{ userId: "a", label: "a" }] };
 }
 
 describe("account lifecycle", () => {
@@ -146,6 +164,114 @@ describe("account lifecycle", () => {
 });
 
 describe("watch and notification flow", () => {
+  it("does not notify when member fetch proves Unknown Member", async () => {
+    const { accounts } = await setup(); await registerMain(accounts); await link(accounts, "main", "a");
+    const result = await authorizeQueuedNotification(mockClient({ channel: visibleChannel(), fetchMember: async () => { throw { status: 404, code: 10007 }; } }), accounts, { mainUserId: "main", guildId: "guild", channelId: "channel", kind: "direct", targetUserIds: ["a"] });
+    expect(result).toEqual({ kind: "authorized", targets: [] });
+  });
+
+  it("does not notify when member access is denied", async () => {
+    const { accounts } = await setup(); await registerMain(accounts); await link(accounts, "main", "a");
+    const result = await authorizeQueuedNotification(mockClient({ channel: visibleChannel(), fetchMember: async () => { throw { status: 403, code: 50013 }; } }), accounts, { mainUserId: "main", guildId: "guild", channelId: "channel", kind: "direct", targetUserIds: ["a"] });
+    expect(result).toEqual({ kind: "authorized", targets: [] });
+  });
+
+  it("retries a temporary member API failure instead of dropping the candidate", async () => {
+    const { accounts } = await setup(); await registerMain(accounts); await link(accounts, "main", "a");
+    const result = await authorizeQueuedNotification(mockClient({ channel: visibleChannel(), fetchMember: async () => { throw { status: 503 }; } }), accounts, { mainUserId: "main", guildId: "guild", channelId: "channel", kind: "direct", targetUserIds: ["a"] });
+    expect(result).toMatchObject({ kind: "retry", reason: "temporary discord api failure" });
+  });
+
+  it("retries a network failure during member lookup", async () => {
+    const { accounts } = await setup(); await registerMain(accounts); await link(accounts, "main", "a");
+    const result = await authorizeQueuedNotification(mockClient({ channel: visibleChannel(), fetchMember: async () => { throw { code: "ECONNRESET" }; } }), accounts, { mainUserId: "main", guildId: "guild", channelId: "channel", kind: "direct", targetUserIds: ["a"] });
+    expect(result).toMatchObject({ kind: "retry", reason: "temporary discord api failure" });
+  });
+
+  it("uses discord.js RateLimitError retryAfter as milliseconds", () => {
+    expect(classifyDiscordError({ name: "RateLimitError", status: 429, retryAfter: 750 }, "member")).toMatchObject({ kind: "temporary", retryAfterMs: 750 });
+  });
+
+  it("sends after a temporary member failure recovers", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    let memberAttempts = 0;
+    const client = mockClient({ channel: visibleChannel(), fetchMember: async () => { memberAttempts++; if (memberAttempts === 1) throw { status: 503 }; return {}; } });
+    await state.notifications.inspect({ id: "member-retry-success", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true });
+    const sent: string[] = [];
+    expect(await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 2_000, 50, { authorize: (input) => authorizeQueuedNotification(client, state.accounts, input) })).toEqual({ sent: 0, failed: 0 });
+    const availableAt = (state.db.raw.prepare("SELECT available_at FROM notification_queue WHERE message_id='member-retry-success'").get() as { available_at: number }).available_at;
+    expect(await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, availableAt, 50, { authorize: (input) => authorizeQueuedNotification(client, state.accounts, input) })).toEqual({ sent: 1, failed: 0 });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("records failed after the temporary member failure retry budget", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    const client = mockClient({ channel: visibleChannel(), fetchMember: async () => { throw { status: 503 }; } });
+    await state.notifications.inspect({ id: "member-retry-failed", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true });
+    const sent: string[] = [];
+    for (const now of [2_000, 2_500, 3_500]) await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, now, 50, { authorize: (input) => authorizeQueuedNotification(client, state.accounts, input) });
+    expect(sent).toHaveLength(0);
+    expect(state.db.raw.prepare("SELECT status, last_error FROM notification_queue WHERE message_id='member-retry-failed'").get()).toMatchObject({ status: "failed", last_error: "temporary discord api failure" });
+  });
+
+  it("retries a temporary channel fetch failure", async () => {
+    const { accounts } = await setup(); await registerMain(accounts); await link(accounts, "main", "a");
+    const result = await authorizeQueuedNotification(mockClient({ fetchMember: async () => ({}), fetchChannel: async () => { throw { status: 503 }; } }), accounts, { mainUserId: "main", guildId: "guild", channelId: "channel", kind: "direct", targetUserIds: ["a"] });
+    expect(result).toMatchObject({ kind: "retry", reason: "temporary discord api failure" });
+  });
+
+  it("cancels when channel access is definitively unavailable", async () => {
+    const { accounts } = await setup(); await registerMain(accounts); await link(accounts, "main", "a");
+    const result = await authorizeQueuedNotification(mockClient({ fetchMember: async () => ({}), fetchChannel: async () => visibleChannel(false) }), accounts, { mainUserId: "main", guildId: "guild", channelId: "channel", kind: "direct", targetUserIds: ["a"] });
+    expect(result).toEqual({ kind: "authorized", targets: [] });
+  });
+
+  it("does not send after watch off during authorization retry", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    await state.notifications.inspect({ id: "retry-watch-off", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true });
+    const sent: string[] = [];
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 2_000, 50, { authorize: async () => ({ kind: "retry", reason: "temporary discord api failure" }) });
+    await state.watches.set("guild", "a", false, { isMember: async () => true });
+    const client = mockClient({ channel: visibleChannel(), fetchMember: async () => ({}) });
+    const availableAt = (state.db.raw.prepare("SELECT available_at FROM notification_queue WHERE message_id='retry-watch-off'").get() as { available_at: number }).available_at;
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, availableAt, 50, { authorize: (input) => authorizeQueuedNotification(client, state.accounts, input) });
+    expect(sent).toHaveLength(0);
+    expect((state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='retry-watch-off'").get() as { status: string }).status).toBe("cancelled");
+  });
+
+  it("does not send after unlink during authorization retry", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    await state.notifications.inspect({ id: "retry-unlink", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true });
+    const sent: string[] = [];
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 2_000, 50, { authorize: async () => ({ kind: "retry", reason: "temporary discord api failure" }) });
+    await state.accounts.unlink("main", "a");
+    expect(await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 2_500, 50, { authorize: async () => ({ kind: "authorized", targets: [] }) })).toEqual({ sent: 0, failed: 0 });
+    expect(sent).toHaveLength(0);
+  });
+
+  it("does not send after main account deletion during authorization retry", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    await state.notifications.inspect({ id: "retry-delete", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true });
+    const sent: string[] = [];
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 2_000, 50, { authorize: async () => ({ kind: "retry", reason: "temporary discord api failure" }) });
+    expect(state.accounts.deleteAccount("main")).toBe("main");
+    expect(await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 2_500, 50, { authorize: async () => authorizedTarget() })).toEqual({ sent: 0, failed: 0 });
+    expect(sent).toHaveLength(0);
+  });
+
+  it("does not duplicate a DM across authorization retries", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    await state.notifications.inspect({ id: "retry-once", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true });
+    let calls = 0;
+    const sent: string[] = [];
+    const authorization = { authorize: async () => { calls++; return calls === 1 ? { kind: "retry" as const, reason: "temporary discord api failure" } : authorizedTarget(); } };
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 2_000, 50, authorization);
+    const availableAt = (state.db.raw.prepare("SELECT available_at FROM notification_queue WHERE message_id='retry-once'").get() as { available_at: number }).available_at;
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, availableAt, 50, authorization);
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, availableAt + 1_000, 50, authorization);
+    expect(sent).toHaveLength(1);
+  });
+
   it("does not send a success heartbeat while Gateway is unavailable", async () => {
     const { db } = await setup();
     const requests: string[] = [];

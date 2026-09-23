@@ -1,15 +1,35 @@
 import type { SqliteDatabase } from "../db.js";
 import type { AccountService } from "./accounts.js";
 import type { Logger } from "../logger.js";
+import { classifyDiscordError } from "./discord-errors.js";
 
 export type MentionKind = "direct" | "everyone";
 export interface IncomingMessage { id: string; guildId: string | null; channelId?: string; authorBot: boolean; mentionedUserIds: string[]; mentionEveryone: boolean; }
-export interface GuildVisibility { isMember(userId: string): Promise<boolean>; canViewChannel(userId: string): Promise<boolean>; }
+export type AccessDecision = { kind: "allowed" } | { kind: "denied"; reason?: string } | { kind: "retry"; reason: string; retryAfterMs?: number };
+export type AccessCheck = boolean | AccessDecision;
+export interface GuildVisibility { isMember(userId: string): Promise<AccessCheck>; canViewChannel(userId: string): Promise<AccessCheck>; }
 export interface NotificationSender { send(mainUserId: string, content: string): Promise<void>; }
 export interface AuthorizedTarget { userId: string; label: string; }
-export interface NotificationAuthorization { authorize(input: { mainUserId: string; guildId: string; channelId: string; kind: MentionKind; targetUserIds: string[] }): Promise<AuthorizedTarget[]>; }
+export type AuthorizationDecision = { kind: "authorized"; targets: AuthorizedTarget[] } | { kind: "retry"; reason: string; retryAfterMs?: number };
+export interface NotificationAuthorization { authorize(input: { mainUserId: string; guildId: string; channelId: string; kind: MentionKind; targetUserIds: string[] }): Promise<AuthorizedTarget[] | AuthorizationDecision>; }
 
 interface Group { mainUserId: string; kind: MentionKind; targetLabels: string[]; targetUserIds: string[]; }
+
+const MAX_AUTHORIZATION_ATTEMPTS = 3;
+
+function accessDecision(result: AccessCheck): AccessDecision {
+  return typeof result === "boolean" ? (result ? { kind: "allowed" } : { kind: "denied" }) : result;
+}
+
+function decisionFromError(error: unknown, resource: "member" | "channel" | "permission"): AccessDecision {
+  const failure = classifyDiscordError(error, resource);
+  return failure.kind === "permanent" ? { kind: "denied", reason: failure.reason } : { kind: "retry", reason: failure.reason, ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}) };
+}
+
+function retryDelayMs(attempt: number, retryAfterMs?: number): number {
+  const exponential = Math.min(500 * (2 ** Math.max(0, attempt - 1)), 10_000);
+  return Math.min(Math.max(retryAfterMs ?? exponential, 250), 10_000);
+}
 
 export class NotificationService {
   private readonly lastSentAt = new Map<string, number>();
@@ -29,7 +49,18 @@ export class NotificationService {
     if (candidates.length === 0) return 0;
     const groups = new Map<string, Group>();
     for (const candidate of candidates) {
-      if (!(await visibility.isMember(candidate.subUserId)) || !(await visibility.canViewChannel(candidate.subUserId))) continue;
+      let member: AccessDecision;
+      try { member = accessDecision(await visibility.isMember(candidate.subUserId)); }
+      catch (error) { member = decisionFromError(error, "member"); }
+      if (member.kind === "denied") continue;
+      if (member.kind === "allowed") {
+        let channel: AccessDecision;
+        try { channel = accessDecision(await visibility.canViewChannel(candidate.subUserId)); }
+        catch (error) { channel = decisionFromError(error, "permission"); }
+        if (channel.kind === "denied") continue;
+      }
+      // Temporary failures remain candidates for deferred, fail-closed
+      // authorization in the delivery worker.
       const existing = groups.get(candidate.mainUserId);
       const kind: MentionKind = message.mentionEveryone ? "everyone" : "direct";
       const label = labels.get(candidate.subUserId) ?? candidate.username;
@@ -83,24 +114,36 @@ export class NotificationService {
       let targetIds = JSON.parse(String(row.target_user_ids)) as string[];
       let labels = JSON.parse(String(row.target_labels)) as string[];
       if (authorization) {
-        let authorized: AuthorizedTarget[];
+        let decision: AuthorizationDecision;
         try {
-          authorized = await authorization.authorize({ mainUserId: String(row.main_user_id), guildId: String(row.guild_id), channelId: String(row.channel_id ?? ""), kind: row.kind as MentionKind, targetUserIds: targetIds });
+          const result = await authorization.authorize({ mainUserId: String(row.main_user_id), guildId: String(row.guild_id), channelId: String(row.channel_id ?? ""), kind: row.kind as MentionKind, targetUserIds: targetIds });
+          decision = Array.isArray(result) ? { kind: "authorized", targets: result } : result;
         } catch (error) {
-          const message = error instanceof Error ? error.message : "authorization error";
-          this.db.raw.prepare("UPDATE notification_queue SET status='failed', last_error=? WHERE id=? AND status='processing'").run(message.slice(0, 500), row.id);
-          this.logger.error("notification authorization failed", { queueId: row.id, error: message.slice(0, 200) });
-          failed++;
+          const failure = classifyDiscordError(error);
+          decision = failure.kind === "temporary" ? { kind: "retry", reason: failure.reason, ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}) } : { kind: "authorized", targets: [] };
+        }
+        if (decision.kind === "retry") {
+          // The SELECT snapshot contains the value before the conditional
+          // claim increments it, so include the current authorization attempt.
+          const attempts = Number(row.attempts ?? 0) + 1;
+          if (attempts >= MAX_AUTHORIZATION_ATTEMPTS) {
+            this.db.raw.prepare("UPDATE notification_queue SET status='failed', last_error=? WHERE id=? AND status='processing'").run(decision.reason, row.id);
+            this.logger.warn("notification authorization retry limit reached", { queueId: row.id, reason: decision.reason });
+            failed++;
+          } else {
+            const availableAt = now + retryDelayMs(attempts, decision.retryAfterMs);
+            this.db.raw.prepare("UPDATE notification_queue SET status='pending', available_at=?, last_error=? WHERE id=? AND status='processing'").run(availableAt, decision.reason, row.id);
+          }
           continue;
         }
-        const authorizedById = new Map(authorized.map((target) => [target.userId, target.label]));
+        const authorizedById = new Map(decision.targets.map((target) => [target.userId, target.label]));
         targetIds = targetIds.filter((userId) => authorizedById.has(userId));
         labels = targetIds.map((userId) => authorizedById.get(userId) ?? userId);
         if (targetIds.length === 0) {
           this.db.raw.prepare("UPDATE notification_queue SET status='cancelled', last_error='authorization revoked before send' WHERE id=? AND status='processing'").run(row.id);
           continue;
         }
-        this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=? WHERE id=? AND status='processing'").run(JSON.stringify(targetIds), JSON.stringify(labels), row.id);
+        this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=?, last_error=NULL WHERE id=? AND status='processing'").run(JSON.stringify(targetIds), JSON.stringify(labels), row.id);
       }
       const content = `🔔 別アカウントにメンションがありました\n\n対象アカウント：${labels.join("、")}\nサーバー：${String(row.guild_id)}\n種類：${row.kind === "direct" ? "直接メンション" : "全体メンション"}`;
       try {
@@ -122,11 +165,9 @@ export class NotificationService {
     for (let attempt = 0; attempt < 3; attempt++) {
       try { await send(); return; }
       catch (error) {
-        const retryAfter = typeof error === "object" && error !== null && "retryAfter" in error ? Number((error as { retryAfter: unknown }).retryAfter) : 0;
-        const status = typeof error === "object" && error !== null && "status" in error ? Number((error as { status: unknown }).status) : 0;
-        const transient = status === 429 || [500, 502, 503, 504].includes(status) || retryAfter > 0;
-        if (attempt === 2 || !transient) throw error;
-        const delayMs = retryAfter > 0 ? Math.min(retryAfter * 1000, 10_000) : 250 * (2 ** attempt);
+        const failure = classifyDiscordError(error);
+        if (attempt === 2 || failure.kind !== "temporary") throw error;
+        const delayMs = failure.retryAfterMs ?? 250 * (2 ** attempt);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
     }
