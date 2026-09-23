@@ -10,6 +10,8 @@ import { NotificationService } from "../src/services/notifications.js";
 import { Logger } from "../src/logger.js";
 import { canUseAdminStats } from "../src/services/permissions.js";
 import { HealthcheckService } from "../src/services/healthcheck.js";
+import { commandDefinitions } from "../src/commands.js";
+import { helpText } from "../src/help.js";
 
 const resources: Array<{ db: SqliteDatabase; dir: string }> = [];
 
@@ -110,6 +112,36 @@ describe("account lifecycle", () => {
     await registerMain(developer.accounts, "developer", "developer"); await registerMain(regular.accounts, "regular", "regular");
     expect((developer.db.raw.prepare("SELECT plan FROM entitlements WHERE user_id='developer'").get() as { plan: string }).plan).toBe("developer_test");
     expect((regular.db.raw.prepare("SELECT plan FROM entitlements WHERE user_id='regular'").get() as { plan: string }).plan).toBe("free");
+  });
+
+  it("publishes the user help and account deletion commands", () => {
+    const names = commandDefinitions().map((command) => command.name);
+    expect(names).toEqual(expect.arrayContaining(["help", "account"]));
+    expect(helpText("AltNoti")).toContain("/link issue");
+    expect(helpText("AltNoti")).toContain("/account delete");
+  });
+
+  it("deletes a main account and all directly stored account data", async () => {
+    const { accounts, watches, notifications, db } = await setup();
+    await registerMain(accounts); await link(accounts, "main", "sub", "sub");
+    await watches.set("guild", "sub", false, { isMember: async () => true });
+    await notifications.inspect({ id: "delete-me", guildId: "guild", authorBot: false, mentionedUserIds: ["sub"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true });
+    db.raw.prepare("INSERT INTO notification_dedup(main_user_id, message_id, created_at) VALUES ('main', 'dedup', 1000)").run();
+    expect(accounts.deleteAccount("main")).toBe("main");
+    expect(accounts.getStatus("main").kind).toBe("none");
+    for (const table of ["main_accounts", "account_links", "guild_watches", "link_codes", "notification_queue", "notification_dedup", "entitlements"]) {
+      expect((db.raw.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count, table).toBe(0);
+    }
+  });
+
+  it("deletes only a sub account while retaining the main account", async () => {
+    const { accounts, watches, db } = await setup();
+    await registerMain(accounts); await link(accounts, "main", "sub", "sub");
+    await watches.set("guild", "sub", false, { isMember: async () => true });
+    expect(accounts.deleteAccount("sub")).toBe("sub");
+    expect(accounts.getStatus("sub").kind).toBe("none");
+    expect(accounts.getStatus("main").kind).toBe("main");
+    expect((db.raw.prepare("SELECT COUNT(*) AS count FROM account_links").get() as { count: number }).count).toBe(0);
   });
 });
 

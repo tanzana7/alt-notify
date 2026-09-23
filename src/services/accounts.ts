@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import type { SqliteDatabase } from "../db.js";
 
 export type Plan = "free" | "pro" | "developer_test";
-export interface AccountStatus { kind: "main" | "sub" | "none"; mainUserId?: string; mainUsername?: string; links: Array<{ userId: string; username: string; watchOffGuilds?: string[] }>; watches: string[]; watchOffGuilds: string[]; }
+export interface AccountStatus { kind: "main" | "sub" | "none"; mainUserId?: string; mainUsername?: string; plan?: Plan; linkLimit?: number; links: Array<{ userId: string; username: string; watchOffGuilds?: string[] }>; watches: string[]; watchOffGuilds: string[]; }
 
 export class AccountService {
   private readonly failedCodeAttempts = new Map<string, { since: number; count: number }>();
@@ -88,9 +88,48 @@ export class AccountService {
     return 1;
   }
 
+  public deleteAccount(userId: string): "main" | "sub" | "none" {
+    const main = this.db.raw.prepare("SELECT user_id AS userId FROM main_accounts WHERE user_id=?").get(userId) as { userId: string } | undefined;
+    if (main) {
+      const tx = this.db.raw.transaction(() => {
+        // main_accounts cascades links, watches, link codes, and queued rows;
+        // dedup has no foreign key, so remove it explicitly as personal data.
+        this.db.raw.prepare("DELETE FROM notification_queue WHERE main_user_id=?").run(userId);
+        this.db.raw.prepare("DELETE FROM notification_dedup WHERE main_user_id=?").run(userId);
+        this.db.raw.prepare("DELETE FROM entitlements WHERE user_id=?").run(userId);
+        // Keep deletion correct even when a legacy database was created before
+        // foreign-key enforcement was enabled.
+        this.db.raw.prepare("DELETE FROM guild_watches WHERE sub_user_id IN (SELECT sub_user_id FROM account_links WHERE main_user_id=?)").run(userId);
+        this.db.raw.prepare("DELETE FROM account_links WHERE main_user_id=?").run(userId);
+        this.db.raw.prepare("DELETE FROM link_codes WHERE main_user_id=?").run(userId);
+        this.db.raw.prepare("DELETE FROM main_accounts WHERE user_id=?").run(userId);
+      });
+      tx();
+      return "main";
+    }
+    const sub = this.db.raw.prepare("SELECT sub_user_id AS subUserId, main_user_id AS mainUserId FROM account_links WHERE sub_user_id=?").get(userId) as { subUserId: string; mainUserId: string } | undefined;
+    if (!sub) return "none";
+    const tx = this.db.raw.transaction(() => {
+      const queued = this.db.raw.prepare("SELECT id, target_user_ids, target_labels FROM notification_queue WHERE main_user_id=? AND status IN ('pending','processing')").all(sub.mainUserId) as Array<{ id: number; target_user_ids: string; target_labels: string }>;
+      for (const item of queued) {
+        const targetIds = JSON.parse(item.target_user_ids) as string[];
+        const targetLabels = JSON.parse(item.target_labels) as string[];
+        const keep = targetIds.map((targetId, index) => ({ targetId, label: targetLabels[index] ?? targetId })).filter((target) => target.targetId !== sub.subUserId);
+        if (keep.length === 0) this.db.raw.prepare("UPDATE notification_queue SET status='cancelled', last_error='account deleted' WHERE id=?").run(item.id);
+        else this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=? WHERE id=?").run(JSON.stringify(keep.map((target) => target.targetId)), JSON.stringify(keep.map((target) => target.label)), item.id);
+      }
+      this.db.raw.prepare("DELETE FROM account_links WHERE sub_user_id=?").run(sub.subUserId);
+    });
+    tx();
+    return "sub";
+  }
+
   public getStatus(userId: string): AccountStatus {
     const main = this.db.raw.prepare("SELECT user_id AS userId FROM main_accounts WHERE user_id=?").get(userId) as { userId: string } | undefined;
     if (main) {
+      const entitlement = this.db.raw.prepare("SELECT plan FROM entitlements WHERE user_id=?").get(userId) as { plan: Plan } | undefined;
+      const plan = entitlement?.plan ?? "free";
+      const linkLimit = plan === "developer_test" || plan === "pro" ? 5 : this.freeLinkLimit;
       const links = this.db.raw.prepare(`
         SELECT l.sub_user_id AS userId, l.username,
           COALESCE((SELECT json_group_array(w.guild_id) FROM guild_watches w WHERE w.sub_user_id=l.sub_user_id AND w.enabled=0), '[]') AS watchOffGuilds
@@ -98,7 +137,7 @@ export class AccountService {
       `).all(userId).map((row) => ({ ...(row as { userId: string; username: string; watchOffGuilds: string }), watchOffGuilds: JSON.parse((row as { watchOffGuilds: string }).watchOffGuilds) as string[] }));
       const watches = this.db.raw.prepare("SELECT guild_id FROM guild_watches WHERE sub_user_id IN (SELECT sub_user_id FROM account_links WHERE main_user_id=?) AND enabled=1").all(userId).map((r) => (r as { guild_id: string }).guild_id);
       const watchOffGuilds = this.db.raw.prepare("SELECT DISTINCT guild_id FROM guild_watches WHERE sub_user_id IN (SELECT sub_user_id FROM account_links WHERE main_user_id=?) AND enabled=0").all(userId).map((r) => (r as { guild_id: string }).guild_id);
-      return { kind: "main", links, watches, watchOffGuilds };
+      return { kind: "main", plan, linkLimit, links, watches, watchOffGuilds };
     }
     const sub = this.getMainForSub(userId);
     if (!sub) return { kind: "none", links: [], watches: [], watchOffGuilds: [] };

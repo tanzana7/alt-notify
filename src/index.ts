@@ -26,6 +26,7 @@ import { ApprovalStore } from "./services/approval.js";
 import { canUseAdminStats } from "./services/permissions.js";
 import { MemberCache } from "./services/member-cache.js";
 import { HealthcheckService } from "./services/healthcheck.js";
+import { helpText } from "./help.js";
 
 const config = loadConfig();
 const logger = new Logger(config.LOG_LEVEL);
@@ -40,6 +41,7 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 const pendingApprovals = new ApprovalStore();
+const pendingDeletions = new ApprovalStore();
 const memberCache = new MemberCache<GuildMember>(5_000);
 
 function privateReply(interaction: ChatInputCommandInteraction | ButtonInteraction, content: string, components?: ActionRowBuilder<ButtonBuilder>[]): Promise<unknown> {
@@ -95,15 +97,19 @@ async function authorizeQueuedNotification(input: { mainUserId: string; guildId:
 async function handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   const subcommand = interaction.options.getSubcommand(false);
   try {
+    if (interaction.commandName === "help") {
+      await privateReply(interaction, helpText(config.APP_NAME));
+      return;
+    }
     if (interaction.commandName === "main" && subcommand === "set") {
       await interaction.deferReply(interaction.inGuild() ? { flags: MessageFlags.Ephemeral } : {});
       await accounts.registerMain(interaction.user.id, interaction.user.username, async () => { await interaction.user.send({ content: "メインアカウントの登録を確認しました。", allowedMentions: { parse: [] } }); });
-      await interaction.editReply("メインアカウントを登録しました");
+      await interaction.editReply("このアカウントをメインアカウントに設定しました。\n次に /link issue を実行してください。");
       return;
     }
     if (interaction.commandName === "link" && subcommand === "issue") {
       const code = accounts.issueLinkCode(interaction.user.id);
-      await privateReply(interaction, `連携コード：${code}\n有効期限：10分`);
+      await privateReply(interaction, `連携コード：${code}\n有効期限：10分\n\n次の順で操作してください。\n1. サブアカウントへ切り替える\n2. /link approve を実行する\n3. このコードを入力する\n4. 表示された承認ボタンを押す`);
       return;
     }
     if (interaction.commandName === "link" && subcommand === "approve") {
@@ -111,7 +117,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
       const preview = accounts.previewLinkCode(interaction.user.id, code);
       const token = pendingApprovals.issue(interaction.user.id, accounts.hashForApproval(code));
       const button = new ButtonBuilder().setCustomId(`link-approve:${token}`).setLabel("連携を承認する").setStyle(ButtonStyle.Primary);
-      await privateReply(interaction, `連携先：${preview.mainUsername}\nID：${preview.mainUserId}\n自動監視：連携承認後に有効`, [new ActionRowBuilder<ButtonBuilder>().addComponents(button)]);
+      await privateReply(interaction, `連携先：${preview.mainUsername}\n\n承認すると、Botが導入され、あなたが参加しているサーバーを自動監視します。\n特定のサーバーだけ停止する場合は、そのサーバーで /watch off を実行してください。\n\n承認後はこれで設定完了です。通常は /watch on は不要です。`, [new ActionRowBuilder<ButtonBuilder>().addComponents(button)]);
       return;
     }
     if (interaction.commandName === "watch") {
@@ -119,32 +125,42 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
       const sub = subcommand;
       if (sub === "status") {
         const state = watches.status(interaction.guildId, interaction.user.id);
-        const text = state === "auto" ? "自動監視中" : state === "on" ? "監視中（手動ON）" : state === "off" ? "このサーバーはOFF" : "連携されていません";
+        const text = state === "auto" ? "監視：自動（Bot導入済み・参加中のサーバー）" : state === "on" ? "監視：ON" : state === "off" ? "監視：OFF（このサーバーのみ）" : "監視：連携されていません";
         await privateReply(interaction, text);
         return;
       }
       const guild = interaction.guild;
       if (!guild) { await privateReply(interaction, "サーバー内で実行してください"); return; }
       await watches.set(interaction.guildId, interaction.user.id, sub === "on", { isMember: async (userId) => { try { await guild.members.fetch(userId); return true; } catch { return false; } } });
-      await privateReply(interaction, sub === "on" ? "このサーバーの監視を再開しました" : "このサーバーの監視をOFFにしました");
+      await privateReply(interaction, sub === "on" ? "このサーバーの監視を再開しました。" : "このサーバーの監視をOFFにしました。再起動後も維持されます。");
       return;
     }
     if (interaction.commandName === "unlink") {
       const status = accounts.getStatus(interaction.user.id);
       const target = interaction.options.getUser("account", false)?.id;
-      if (status.kind === "main" && !target) { await privateReply(interaction, "解除するサブアカウントを指定してください"); return; }
+      if (status.kind === "main" && !target) { await privateReply(interaction, "メインアカウントは、解除するサブアカウントを指定してください。"); return; }
       const removed = accounts.unlink(interaction.user.id, target);
-      await privateReply(interaction, removed ? "連携を解除しました" : "連携が見つかりません");
+      await privateReply(interaction, removed ? "連携を解除しました。未送信の対象通知も停止しました。全データを削除する場合は /account delete を実行してください。" : "連携が見つかりません。");
+      return;
+    }
+    if (interaction.commandName === "account" && subcommand === "delete") {
+      const token = pendingDeletions.issue(interaction.user.id, "delete");
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId(`account-delete:${token}`).setLabel("削除する").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`account-delete-cancel:${token}`).setLabel("キャンセル").setStyle(ButtonStyle.Secondary)
+      );
+      await privateReply(interaction, `${config.APP_NAME}に保存された連携・監視設定・未送信通知を削除します。この操作は取り消せません。`, [row]);
       return;
     }
     if (interaction.commandName === "status") {
       const status = accounts.getStatus(interaction.user.id);
-      if (status.kind === "none") { await privateReply(interaction, "連携はありません"); return; }
+      if (status.kind === "none") { await privateReply(interaction, "まだ設定されていません。メインアカウントなら /main set を実行してください。"); return; }
       if (status.kind === "main") {
-        await privateReply(interaction, status.links.length ? `連携中：${status.links.map((link) => `${link.username}${link.watchOffGuilds?.length ? `（個別OFF ${link.watchOffGuilds.length}件）` : "（自動監視）"}`).join("、")}` : "連携中のサブアカウントはありません");
+        const links = status.links.length ? status.links.map((link) => `${link.username}${link.watchOffGuilds?.length ? `（個別OFF ${link.watchOffGuilds.length}件）` : "（自動監視）"}`).join("、") : "なし";
+        await privateReply(interaction, `立場：メイン\n連携数：${status.links.length}/${status.linkLimit ?? 5}\n連携中：${links}\n個別OFFサーバー数：${status.watchOffGuilds.length}`);
         return;
       }
-      await privateReply(interaction, `連携先：${status.mainUsername}\n自動監視：有効\n個別OFFサーバー数：${status.watchOffGuilds.length}`);
+      await privateReply(interaction, `立場：サブ\n連携先：${status.mainUsername}\n監視：Bot導入済みで参加中のサーバーを自動監視\n個別OFFサーバー数：${status.watchOffGuilds.length}`);
       return;
     }
     if (interaction.commandName === "admin-stats") {
@@ -166,12 +182,26 @@ client.on(Events.ShardDisconnect, (event) => logger.warn("gateway disconnected",
 client.on(Events.ShardReconnecting, () => logger.warn("gateway reconnecting"));
 client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isChatInputCommand()) await handleCommand(interaction);
-  if (!interaction.isButton() || !interaction.customId.startsWith("link-approve:")) return;
+  if (!interaction.isButton()) return;
+  if (interaction.customId.startsWith("account-delete-cancel:")) {
+    await interaction.update({ content: "削除をキャンセルしました。", components: [] });
+    return;
+  }
+  if (interaction.customId.startsWith("account-delete:")) {
+    const token = interaction.customId.slice("account-delete:".length);
+    try {
+      pendingDeletions.consume(token, interaction.user.id);
+      const result = accounts.deleteAccount(interaction.user.id);
+      await interaction.update({ content: result === "none" ? "削除するデータがありません。" : "保存されていたAltNotiのデータを削除しました。", components: [] });
+    } catch (error) { await privateReply(interaction, error instanceof Error ? error.message : "削除に失敗しました"); }
+    return;
+  }
+  if (!interaction.customId.startsWith("link-approve:")) return;
   const token = interaction.customId.slice("link-approve:".length);
   try {
     const codeHash = pendingApprovals.consume(token, interaction.user.id);
     const result = accounts.approveLinkByHash(interaction.user.id, codeHash, interaction.user.username);
-    await interaction.update({ content: "連携を承認しました。自動監視を有効にしました", components: [] });
+    await interaction.update({ content: "連携を承認しました。これで設定完了です。\nBotが導入され、サブアカウントが参加しているサーバーを自動監視します。\n通常は /watch on は不要です。", components: [] });
     await client.users.send(result.mainUserId, { content: `サブアカウント「${interaction.user.username}」を連携しました。`, allowedMentions: { parse: [] } }).catch((error: unknown) => logger.warn("link confirmation DM failed", { mainUserId: result.mainUserId, error: error instanceof Error ? error.message : "unknown" }));
   } catch (error) { await privateReply(interaction, error instanceof Error ? error.message : "連携に失敗しました"); }
 });
