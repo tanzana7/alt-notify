@@ -79,6 +79,15 @@ function memberAccess(message: Message) {
         const failure = classifyDiscordError(error, "permission");
         return failure.kind === "temporary" ? { kind: "retry" as const, reason: failure.reason, ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}) } : { kind: "denied" as const, reason: failure.reason };
       }
+    },
+    getMemberRoleIds: async (userId: string) => {
+      try {
+        const member = await getMember(userId);
+        return member ? [...member.roles.cache.keys()] : { kind: "denied" as const, reason: "discord member not found" };
+      } catch (error) {
+        const failure = classifyDiscordError(error, "member");
+        return failure.kind === "temporary" ? { kind: "retry" as const, reason: failure.reason, ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}) } : { kind: "denied" as const, reason: failure.reason };
+      }
     }
   };
 }
@@ -198,8 +207,10 @@ client.on(Events.MessageCreate, async (message) => {
   try {
     if (!message.guild || message.author.bot) return;
     const mentionedUserIds = [...message.mentions.users.keys()];
+    const mentionedRoleIds = [...message.mentions.roles.keys()];
     const labels = new Map(mentionedUserIds.map((id) => [id, message.mentions.users.get(id)?.globalName ?? message.mentions.users.get(id)?.username ?? id]));
-    await notifications.inspect({ id: message.id, guildId: message.guild.id, channelId: message.channelId, authorBot: message.author.bot, mentionedUserIds, mentionEveryone: message.mentions.everyone }, memberAccess(message), labels);
+    if (!message.mentions.everyone && mentionedUserIds.length === 0 && mentionedRoleIds.length === 0) return;
+    await notifications.inspect({ id: message.id, guildId: message.guild.id, channelId: message.channelId, authorBot: message.author.bot, mentionedUserIds, mentionedRoleIds, mentionEveryone: message.mentions.everyone }, memberAccess(message), labels);
   } catch (error) { logger.error("message inspection failed", { error: error instanceof Error ? error.message : "unknown" }); }
 });
 

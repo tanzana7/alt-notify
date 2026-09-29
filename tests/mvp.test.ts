@@ -57,6 +57,10 @@ function authorizedTarget() {
   return { kind: "authorized" as const, targets: [{ userId: "a", label: "a" }] };
 }
 
+function roleMember(roleIds: string[]) {
+  return { roles: { cache: new Map(roleIds.map((roleId) => [roleId, {}])) } };
+}
+
 describe("account lifecycle", () => {
   it("does not register a main account when the test DM fails", async () => {
     const { accounts } = await setup();
@@ -164,6 +168,128 @@ describe("account lifecycle", () => {
 });
 
 describe("watch and notification flow", () => {
+  it("notifies when a linked sub account owns the mentioned role", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }); await registerMain(state.accounts); await link(state.accounts, "main", "a", "subA");
+    const visibility = { isMember: async () => true, getMemberRoleIds: async () => ["role-splatoon"], canViewChannel: async () => true };
+    expect(await state.notifications.inspect({ id: "role-match", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-splatoon"], mentionEveryone: false }, visibility)).toBe(1);
+    const sent: string[] = [];
+    expect(await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 2_000)).toEqual({ sent: 1, failed: 0 });
+    expect(sent[0]).toContain("ロールメンション");
+  });
+
+  it("does not notify a linked sub account without the mentioned role", async () => {
+    const state = await setup(); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    let roleChecks = 0;
+    const visibility = { isMember: async () => true, getMemberRoleIds: async () => { roleChecks++; return ["other-role"]; }, canViewChannel: async () => true };
+    expect(await state.notifications.inspect({ id: "role-no-match", guildId: "guild", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-splatoon"], mentionEveryone: false }, visibility)).toBe(0);
+    expect(roleChecks).toBe(1);
+  });
+
+  it("matches one role among multiple mentioned roles", async () => {
+    const state = await setup(); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    const visibility = { isMember: async () => true, getMemberRoleIds: async () => ["role-splatoon"], canViewChannel: async () => true };
+    expect(await state.notifications.inspect({ id: "role-one-of-many", guildId: "guild", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["other-role", "role-splatoon"], mentionEveryone: false }, visibility)).toBe(1);
+  });
+
+  it("aggregates role mentions for multiple linked subs under one main account", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }); await registerMain(state.accounts); await link(state.accounts, "main", "a", "A"); await link(state.accounts, "main", "b", "B");
+    const visibility = { isMember: async () => true, getMemberRoleIds: async () => ["role-splatoon"], canViewChannel: async () => true };
+    expect(await state.notifications.inspect({ id: "role-grouped", guildId: "guild", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-splatoon"], mentionEveryone: false }, visibility)).toBe(1);
+    expect((state.db.raw.prepare("SELECT target_user_ids FROM notification_queue WHERE message_id='role-grouped'").get() as { target_user_ids: string }).target_user_ids).toBe('["a","b"]');
+    const sent: string[] = [];
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 2_000);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("A、B");
+  });
+
+  it("creates separate role notifications for separate main accounts", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }); await registerMain(state.accounts, "main-a"); await registerMain(state.accounts, "main-b"); await link(state.accounts, "main-a", "a"); await link(state.accounts, "main-b", "b");
+    const visibility = { isMember: async () => true, getMemberRoleIds: async () => ["role-splatoon"], canViewChannel: async () => true };
+    expect(await state.notifications.inspect({ id: "role-separate", guildId: "guild", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-splatoon"], mentionEveryone: false }, visibility)).toBe(2);
+    expect((state.db.raw.prepare("SELECT COUNT(*) AS count FROM notification_queue WHERE message_id='role-separate'").get() as { count: number }).count).toBe(2);
+  });
+
+  it("delivers role mentions before delayed everyone notifications", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    const visibility = { isMember: async () => true, getMemberRoleIds: async () => ["role-splatoon"], canViewChannel: async () => true };
+    await state.notifications.inspect({ id: "role-priority-everyone", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-splatoon"], mentionEveryone: false }, visibility);
+    await state.notifications.inspect({ id: "everyone-after-role", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: [], mentionEveryone: true }, visibility);
+    const sent: string[] = [];
+    expect(await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 1_000, 1)).toEqual({ sent: 1, failed: 0 });
+    expect(sent[0]).toContain("ロールメンション");
+  });
+
+  it("allows an immediate role mention to displace a delayed everyone row", async () => {
+    const state = await setup(undefined, 5, { maxPendingPerMain: 1, minIntervalMs: 0 }); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    const visibility = { isMember: async () => true, getMemberRoleIds: async () => ["role-splatoon"], canViewChannel: async () => true };
+    await state.notifications.inspect({ id: "everyone-before-role", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: [], mentionEveryone: true }, visibility);
+    await state.notifications.inspect({ id: "role-at-capacity", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-splatoon"], mentionEveryone: false }, visibility);
+    expect((state.db.raw.prepare("SELECT status, last_error FROM notification_queue WHERE message_id='everyone-before-role'").get() as { status: string; last_error: string })).toMatchObject({ status: "failed", last_error: "evicted by role mention priority" });
+    expect((state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='role-at-capacity'").get() as { status: string }).status).toBe("pending");
+  });
+
+  it("does not notify a role while watch is off", async () => {
+    const state = await setup(); await registerMain(state.accounts); await link(state.accounts, "main", "a"); await state.watches.set("guild", "a", false, { isMember: async () => true });
+    const visibility = { isMember: async () => true, getMemberRoleIds: async () => ["role-splatoon"], canViewChannel: async () => true };
+    expect(await state.notifications.inspect({ id: "role-watch-off", guildId: "guild", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-splatoon"], mentionEveryone: false }, visibility)).toBe(0);
+  });
+
+  it("does not notify an unlinked role member", async () => {
+    const state = await setup(); await registerMain(state.accounts); await link(state.accounts, "main", "a"); state.accounts.unlink("main", "a");
+    const visibility = { isMember: async () => true, getMemberRoleIds: async () => ["role-splatoon"], canViewChannel: async () => true };
+    expect(await state.notifications.inspect({ id: "role-unlinked", guildId: "guild", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-splatoon"], mentionEveryone: false }, visibility)).toBe(0);
+  });
+
+  it("does not notify a role member who left the guild", async () => {
+    const state = await setup(); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    const visibility = { isMember: async () => false, getMemberRoleIds: async () => ["role-splatoon"], canViewChannel: async () => true };
+    expect(await state.notifications.inspect({ id: "role-departed", guildId: "guild", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-splatoon"], mentionEveryone: false }, visibility)).toBe(0);
+  });
+
+  it("does not notify a role member without channel view permission", async () => {
+    const state = await setup(); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    const visibility = { isMember: async () => true, getMemberRoleIds: async () => ["role-splatoon"], canViewChannel: async () => false };
+    expect(await state.notifications.inspect({ id: "role-hidden", guildId: "guild", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-splatoon"], mentionEveryone: false }, visibility)).toBe(0);
+  });
+
+  it("retains a role candidate when member fetch is temporarily unavailable", async () => {
+    const state = await setup(); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    const visibility = { isMember: async () => { throw { status: 503 }; }, getMemberRoleIds: async () => ["role-splatoon"], canViewChannel: async () => true };
+    expect(await state.notifications.inspect({ id: "role-member-retry", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-splatoon"], mentionEveryone: false }, visibility)).toBe(1);
+    expect((state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='role-member-retry'").get() as { status: string }).status).toBe("pending");
+  });
+
+  it("sends a role notification after member retry recovery", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }); await registerMain(state.accounts); await link(state.accounts, "main", "a", "A");
+    await state.notifications.inspect({ id: "role-retry-success", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-splatoon"], mentionEveryone: false }, { isMember: async () => true, getMemberRoleIds: async () => ["role-splatoon"], canViewChannel: async () => true });
+    let attempts = 0;
+    const client = mockClient({ channel: visibleChannel(), fetchMember: async () => { attempts++; if (attempts === 1) throw { status: 503 }; return roleMember(["role-splatoon"]); } });
+    const sent: string[] = [];
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 1_000, 50, { authorize: (input) => authorizeQueuedNotification(client, state.accounts, input) });
+    const row = state.db.raw.prepare("SELECT available_at FROM notification_queue WHERE message_id='role-retry-success'").get() as { available_at: number };
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, row.available_at, 50, { authorize: (input) => authorizeQueuedNotification(client, state.accounts, input) });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("ロールメンション");
+    expect(attempts).toBe(2);
+  });
+
+  it("records a failed role notification after the retry budget", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    await state.notifications.inspect({ id: "role-retry-failed", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-splatoon"], mentionEveryone: false }, { isMember: async () => true, getMemberRoleIds: async () => ["role-splatoon"], canViewChannel: async () => true });
+    const client = mockClient({ channel: visibleChannel(), fetchMember: async () => { throw { status: 503 }; } });
+    for (const now of [1_000, 1_500, 2_500]) await state.notifications.drain({ send: async () => undefined }, now, 50, { authorize: (input) => authorizeQueuedNotification(client, state.accounts, input) });
+    expect(state.db.raw.prepare("SELECT status, last_error FROM notification_queue WHERE message_id='role-retry-failed'").get()).toMatchObject({ status: "failed", last_error: "temporary discord api failure" });
+  });
+
+  it("does not perform role checks for an ordinary message", async () => {
+    const state = await setup(); await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    let memberChecks = 0; let roleChecks = 0;
+    const visibility = { isMember: async () => { memberChecks++; return true; }, getMemberRoleIds: async () => { roleChecks++; return ["role-splatoon"]; }, canViewChannel: async () => true };
+    expect(await state.notifications.inspect({ id: "ordinary", guildId: "guild", authorBot: false, mentionedUserIds: [], mentionEveryone: false }, visibility)).toBe(0);
+    expect(memberChecks).toBe(0);
+    expect(roleChecks).toBe(0);
+  });
+
   it("does not notify when member fetch proves Unknown Member", async () => {
     const { accounts } = await setup(); await registerMain(accounts); await link(accounts, "main", "a");
     const result = await authorizeQueuedNotification(mockClient({ channel: visibleChannel(), fetchMember: async () => { throw { status: 404, code: 10007 }; } }), accounts, { mainUserId: "main", guildId: "guild", channelId: "channel", kind: "direct", targetUserIds: ["a"] });

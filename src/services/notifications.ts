@@ -3,17 +3,18 @@ import type { AccountService } from "./accounts.js";
 import type { Logger } from "../logger.js";
 import { classifyDiscordError } from "./discord-errors.js";
 
-export type MentionKind = "direct" | "everyone";
-export interface IncomingMessage { id: string; guildId: string | null; channelId?: string; authorBot: boolean; mentionedUserIds: string[]; mentionEveryone: boolean; }
+export type MentionKind = "direct" | "role" | "everyone";
+export interface IncomingMessage { id: string; guildId: string | null; channelId?: string; authorBot: boolean; mentionedUserIds: string[]; mentionedRoleIds?: string[]; mentionEveryone: boolean; }
 export type AccessDecision = { kind: "allowed" } | { kind: "denied"; reason?: string } | { kind: "retry"; reason: string; retryAfterMs?: number };
 export type AccessCheck = boolean | AccessDecision;
-export interface GuildVisibility { isMember(userId: string): Promise<AccessCheck>; canViewChannel(userId: string): Promise<AccessCheck>; }
+export type RoleAccessCheck = string[] | AccessDecision;
+export interface GuildVisibility { isMember(userId: string): Promise<AccessCheck>; getMemberRoleIds?(userId: string): Promise<RoleAccessCheck>; canViewChannel(userId: string): Promise<AccessCheck>; }
 export interface NotificationSender { send(mainUserId: string, content: string): Promise<void>; }
 export interface AuthorizedTarget { userId: string; label: string; }
 export type AuthorizationDecision = { kind: "authorized"; targets: AuthorizedTarget[] } | { kind: "retry"; reason: string; retryAfterMs?: number };
-export interface NotificationAuthorization { authorize(input: { mainUserId: string; guildId: string; channelId: string; kind: MentionKind; targetUserIds: string[] }): Promise<AuthorizedTarget[] | AuthorizationDecision>; }
+export interface NotificationAuthorization { authorize(input: { mainUserId: string; guildId: string; channelId: string; kind: MentionKind; targetUserIds: string[]; mentionedRoleIds?: string[] }): Promise<AuthorizedTarget[] | AuthorizationDecision>; }
 
-interface Group { mainUserId: string; kind: MentionKind; targetLabels: string[]; targetUserIds: string[]; }
+interface Group { mainUserId: string; kind: MentionKind; targetLabels: string[]; targetUserIds: string[]; mentionedRoleIds: string[]; }
 
 const MAX_AUTHORIZATION_ATTEMPTS = 3;
 
@@ -44,8 +45,12 @@ export class NotificationService {
 
   public async inspect(message: IncomingMessage, visibility: GuildVisibility, labels = new Map<string, string>()): Promise<number> {
     if (message.authorBot || !message.guildId) return 0;
+    const mentionedRoleIds = message.mentionedRoleIds ?? [];
+    // This fast path avoids even the linked-account query for ordinary
+    // messages. Role IDs come from Discord's message payload, not content.
+    if (!message.mentionEveryone && message.mentionedUserIds.length === 0 && mentionedRoleIds.length === 0) return 0;
     const links = this.accounts.linkedSubsForGuild(message.guildId);
-    const candidates = links.filter((link) => message.mentionEveryone || message.mentionedUserIds.includes(link.subUserId));
+    const candidates = links.filter((link) => message.mentionEveryone || message.mentionedUserIds.includes(link.subUserId) || mentionedRoleIds.length > 0);
     if (candidates.length === 0) return 0;
     const groups = new Map<string, Group>();
     for (const candidate of candidates) {
@@ -53,6 +58,24 @@ export class NotificationService {
       try { member = accessDecision(await visibility.isMember(candidate.subUserId)); }
       catch (error) { member = decisionFromError(error, "member"); }
       if (member.kind === "denied") continue;
+      const directMatch = message.mentionedUserIds.includes(candidate.subUserId);
+      let roleMatch = false;
+      // Direct and everyone mentions already identify the target. Only a
+      // role-only message needs a member-role lookup, keeping normal traffic
+      // cheap and preserving existing everyone semantics for mixed posts.
+      if (member.kind === "allowed" && !directMatch && !message.mentionEveryone && mentionedRoleIds.length > 0) {
+        if (!visibility.getMemberRoleIds) {
+          member = { kind: "retry", reason: "temporary discord api failure" };
+        } else {
+          try {
+            const roleIds = await visibility.getMemberRoleIds(candidate.subUserId);
+            if (Array.isArray(roleIds)) roleMatch = roleIds.some((roleId) => mentionedRoleIds.includes(roleId));
+            else if (roleIds.kind === "retry") member = roleIds;
+            else member = roleIds;
+          } catch (error) { member = decisionFromError(error, "member"); }
+        }
+      }
+      if (member.kind === "denied" || (!directMatch && !message.mentionEveryone && !roleMatch && member.kind === "allowed")) continue;
       if (member.kind === "allowed") {
         let channel: AccessDecision;
         try { channel = accessDecision(await visibility.canViewChannel(candidate.subUserId)); }
@@ -62,12 +85,13 @@ export class NotificationService {
       // Temporary failures remain candidates for deferred, fail-closed
       // authorization in the delivery worker.
       const existing = groups.get(candidate.mainUserId);
-      const kind: MentionKind = message.mentionEveryone ? "everyone" : "direct";
+      const kind: MentionKind = directMatch ? "direct" : roleMatch ? "role" : "everyone";
       const label = labels.get(candidate.subUserId) ?? candidate.username;
       if (existing) {
         if (!existing.targetUserIds.includes(candidate.subUserId)) { existing.targetUserIds.push(candidate.subUserId); existing.targetLabels.push(label); }
         if (kind === "direct") existing.kind = "direct";
-      } else groups.set(candidate.mainUserId, { mainUserId: candidate.mainUserId, kind, targetUserIds: [candidate.subUserId], targetLabels: [label] });
+      } else groups.set(candidate.mainUserId, { mainUserId: candidate.mainUserId, kind, targetUserIds: [candidate.subUserId], targetLabels: [label], mentionedRoleIds: kind === "role" ? [...mentionedRoleIds] : [] });
+      if (existing && kind === "role") for (const roleId of mentionedRoleIds) if (!existing.mentionedRoleIds.includes(roleId)) existing.mentionedRoleIds.push(roleId);
     }
     let enqueued = 0;
     for (const group of groups.values()) {
@@ -78,23 +102,27 @@ export class NotificationService {
         const pendingCount = Number((this.db.raw.prepare("SELECT COUNT(*) AS count FROM notification_queue WHERE main_user_id=? AND status IN ('pending','processing')").get(group.mainUserId) as { count: number }).count);
         const maxPending = this.options.maxPendingPerMain ?? 200;
         let effectivePendingCount = pendingCount;
-        if (group.kind === "direct" && pendingCount >= maxPending) {
-          // Direct mentions are actionable and should not be blocked by a burst
-          // of delayed everyone mentions. Only a still-pending everyone row can
-          // be displaced; a processing row is already in the send path.
-          const evicted = this.db.raw.prepare("SELECT id FROM notification_queue WHERE main_user_id=? AND kind='everyone' AND status='pending' ORDER BY id DESC LIMIT 1").get(group.mainUserId) as { id: number } | undefined;
+        if (group.kind !== "everyone" && pendingCount >= maxPending) {
+          // Direct mentions are highest priority; role mentions are immediate
+          // but remain below direct mentions and above delayed everyone rows.
+          // Only pending lower-priority rows can be displaced; processing rows
+          // are already in the send path.
+          const evicted = group.kind === "direct"
+            ? this.db.raw.prepare("SELECT id FROM notification_queue WHERE main_user_id=? AND mention_type IN ('role', 'everyone') AND status='pending' ORDER BY CASE mention_type WHEN 'everyone' THEN 0 ELSE 1 END, id DESC LIMIT 1").get(group.mainUserId) as { id: number } | undefined
+            : this.db.raw.prepare("SELECT id FROM notification_queue WHERE main_user_id=? AND mention_type='everyone' AND status='pending' ORDER BY id DESC LIMIT 1").get(group.mainUserId) as { id: number } | undefined;
           if (evicted) {
-            this.db.raw.prepare("UPDATE notification_queue SET status='failed', last_error='evicted by direct mention priority' WHERE id=? AND status='pending'").run(evicted.id);
+            const evictionReason = group.kind === "direct" ? "evicted by direct mention priority" : "evicted by role mention priority";
+            this.db.raw.prepare("UPDATE notification_queue SET status='failed', last_error=? WHERE id=? AND status='pending'").run(evictionReason, evicted.id);
             effectivePendingCount--;
             this.logger.warn("everyone notification evicted for direct mention priority", { mainUserId: group.mainUserId, evictedQueueId: evicted.id });
           }
         }
         if (effectivePendingCount >= maxPending) {
-          this.db.raw.prepare("INSERT INTO notification_queue(main_user_id, message_id, guild_id, channel_id, kind, target_user_ids, target_labels, status, last_error, available_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?)").run(group.mainUserId, message.id, message.guildId, message.channelId ?? "", group.kind, JSON.stringify(group.targetUserIds), JSON.stringify(group.targetLabels), "notification queue capacity exceeded", availableAt, this.now());
+          this.db.raw.prepare("INSERT INTO notification_queue(main_user_id, message_id, guild_id, channel_id, kind, mention_type, target_user_ids, target_labels, target_role_ids, status, last_error, available_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?)").run(group.mainUserId, message.id, message.guildId, message.channelId ?? "", group.kind === "role" ? "direct" : group.kind, group.kind, JSON.stringify(group.targetUserIds), JSON.stringify(group.targetLabels), JSON.stringify(group.mentionedRoleIds), "notification queue capacity exceeded", availableAt, this.now());
           this.logger.warn("notification queue capacity exceeded", { mainUserId: group.mainUserId, maxPending });
           return true;
         }
-        this.db.raw.prepare("INSERT INTO notification_queue(main_user_id, message_id, guild_id, channel_id, kind, target_user_ids, target_labels, available_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(group.mainUserId, message.id, message.guildId, message.channelId ?? "", group.kind, JSON.stringify(group.targetUserIds), JSON.stringify(group.targetLabels), availableAt, this.now());
+        this.db.raw.prepare("INSERT INTO notification_queue(main_user_id, message_id, guild_id, channel_id, kind, mention_type, target_user_ids, target_labels, target_role_ids, available_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(group.mainUserId, message.id, message.guildId, message.channelId ?? "", group.kind === "role" ? "direct" : group.kind, group.kind, JSON.stringify(group.targetUserIds), JSON.stringify(group.targetLabels), JSON.stringify(group.mentionedRoleIds), availableAt, this.now());
         return true;
       })();
       if (queue) enqueued++;
@@ -103,7 +131,7 @@ export class NotificationService {
   }
 
   public async drain(sender: NotificationSender, now = this.now(), max = 50, authorization?: NotificationAuthorization): Promise<{ sent: number; failed: number }> {
-    const rows = this.db.raw.prepare("SELECT * FROM notification_queue WHERE status='pending' AND available_at<=? ORDER BY CASE WHEN kind='direct' THEN 0 ELSE 1 END, id LIMIT ?").all(now, max) as Array<Record<string, unknown>>;
+    const rows = this.db.raw.prepare("SELECT * FROM notification_queue WHERE status='pending' AND available_at<=? ORDER BY CASE mention_type WHEN 'direct' THEN 0 WHEN 'role' THEN 1 ELSE 2 END, id LIMIT ?").all(now, max) as Array<Record<string, unknown>>;
     let sent = 0; let failed = 0;
     for (const row of rows) {
       const lastSentAt = this.lastSentAt.get(String(row.main_user_id));
@@ -116,7 +144,7 @@ export class NotificationService {
       if (authorization) {
         let decision: AuthorizationDecision;
         try {
-          const result = await authorization.authorize({ mainUserId: String(row.main_user_id), guildId: String(row.guild_id), channelId: String(row.channel_id ?? ""), kind: row.kind as MentionKind, targetUserIds: targetIds });
+          const result = await authorization.authorize({ mainUserId: String(row.main_user_id), guildId: String(row.guild_id), channelId: String(row.channel_id ?? ""), kind: row.mention_type as MentionKind, targetUserIds: targetIds, mentionedRoleIds: JSON.parse(String(row.target_role_ids ?? "[]")) as string[] });
           decision = Array.isArray(result) ? { kind: "authorized", targets: result } : result;
         } catch (error) {
           const failure = classifyDiscordError(error);
@@ -145,7 +173,7 @@ export class NotificationService {
         }
         this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=?, last_error=NULL WHERE id=? AND status='processing'").run(JSON.stringify(targetIds), JSON.stringify(labels), row.id);
       }
-      const content = `🔔 別アカウントにメンションがありました\n\n対象アカウント：${labels.join("、")}\nサーバー：${String(row.guild_id)}\n種類：${row.kind === "direct" ? "直接メンション" : "全体メンション"}`;
+      const content = `🔔 別アカウントにメンションがありました\n\n対象アカウント：${labels.join("、")}\nサーバー：${String(row.guild_id)}\n種類：${row.mention_type === "direct" ? "直接メンション" : row.mention_type === "role" ? "ロールメンション" : "全体メンション"}`;
       try {
         await this.sendWithRetry(() => sender.send(String(row.main_user_id), content));
         this.db.raw.prepare("UPDATE notification_queue SET status='sent', sent_at=? WHERE id=? AND status='processing'").run(now, row.id);

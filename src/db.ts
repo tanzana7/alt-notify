@@ -101,7 +101,8 @@ export class SqliteDatabase {
       CREATE TABLE IF NOT EXISTS notification_queue (
         id INTEGER PRIMARY KEY AUTOINCREMENT, main_user_id TEXT NOT NULL REFERENCES main_accounts(user_id) ON DELETE CASCADE,
         message_id TEXT NOT NULL, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL CHECK(kind IN ('direct', 'everyone')),
-        target_user_ids TEXT NOT NULL, target_labels TEXT NOT NULL,
+        mention_type TEXT NOT NULL DEFAULT 'direct' CHECK(mention_type IN ('direct', 'role', 'everyone')),
+        target_user_ids TEXT NOT NULL, target_labels TEXT NOT NULL, target_role_ids TEXT NOT NULL DEFAULT '[]',
         status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'sent', 'failed', 'cancelled')),
         attempts INTEGER NOT NULL DEFAULT 0, available_at INTEGER NOT NULL, last_error TEXT, created_at INTEGER NOT NULL, sent_at INTEGER
       );
@@ -113,6 +114,13 @@ export class SqliteDatabase {
     `);
     const queueColumns = this.raw.prepare("PRAGMA table_info(notification_queue)").all().map((row) => String(row.name));
     if (!queueColumns.includes("channel_id")) this.raw.exec("ALTER TABLE notification_queue ADD COLUMN channel_id TEXT NOT NULL DEFAULT ''");
+    if (!queueColumns.includes("mention_type")) {
+      // Keep the legacy kind column for old tooling and add the role-aware type
+      // separately so existing SQLite files do not need a destructive rebuild.
+      this.raw.exec("ALTER TABLE notification_queue ADD COLUMN mention_type TEXT NOT NULL DEFAULT 'direct' CHECK(mention_type IN ('direct', 'role', 'everyone'))");
+      this.raw.prepare("UPDATE notification_queue SET mention_type='everyone' WHERE kind='everyone'").run();
+    }
+    if (!queueColumns.includes("target_role_ids")) this.raw.exec("ALTER TABLE notification_queue ADD COLUMN target_role_ids TEXT NOT NULL DEFAULT '[]'");
   }
 
   public cleanup(now = Date.now(), recoverProcessing = true): void {

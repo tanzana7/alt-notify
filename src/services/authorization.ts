@@ -6,7 +6,7 @@ import type { AuthorizationDecision, MentionKind } from "./notifications.js";
 export async function authorizeQueuedNotification(
   client: Pick<Client, "guilds">,
   accounts: AccountService,
-  input: { mainUserId: string; guildId: string; channelId: string; kind: MentionKind; targetUserIds: string[] }
+  input: { mainUserId: string; guildId: string; channelId: string; kind: MentionKind; targetUserIds: string[]; mentionedRoleIds?: string[] }
 ): Promise<AuthorizationDecision> {
   if (!input.channelId) return { kind: "authorized", targets: [] };
   const guild = client.guilds.cache.get(input.guildId);
@@ -25,6 +25,7 @@ export async function authorizeQueuedNotification(
   if (!channel || !("permissionsFor" in channel)) return { kind: "authorized", targets: [] };
 
   const permissionChannel = channel as unknown as { permissionsFor: (member: GuildMember) => { has: (permission: bigint) => boolean } | null };
+  const mentionedRoleIds = input.mentionedRoleIds ?? [];
   const activeLinks = accounts.linkedSubsForGuild(input.guildId).filter((link) => link.mainUserId === input.mainUserId && input.targetUserIds.includes(link.subUserId));
   const authorized: Array<{ userId: string; label: string }> = [];
   for (const link of activeLinks) {
@@ -38,6 +39,7 @@ export async function authorizeQueuedNotification(
       continue;
     }
     try {
+      if (input.kind === "role" && !mentionedRoleIds.some((roleId) => member.roles.cache.has(roleId))) continue;
       if (permissionChannel.permissionsFor(member)?.has(PermissionFlagsBits.ViewChannel)) authorized.push({ userId: link.subUserId, label: link.username });
     } catch (error) {
       const failure = classifyDiscordError(error, "permission");

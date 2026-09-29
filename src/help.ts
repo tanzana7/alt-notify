@@ -12,7 +12,10 @@ export function helpText(appName: string): string {
 
 【通知対象】
 ・サブ垢への直接メンション
+・サブ垢が所属するロールへのメンション
 ・@everyone / @here 相当
+
+ロールメンションはDiscord本体の通知設定とは独立して判定します。
 
 【通知対象外】
 ・普通のメッセージ、DM、キーワード
