@@ -41,7 +41,7 @@ async function link(accounts: AccountService, mainId: string, subId: string, use
   return accounts.approveLinkByHash(subId, accounts.hashForApproval(code), username, 1_002);
 }
 
-function mockClient(options: { fetchMember: () => Promise<unknown>; fetchChannel?: () => Promise<unknown>; channel?: unknown }) {
+function mockClient(options: { fetchMember: (userId: string) => Promise<unknown>; fetchChannel?: () => Promise<unknown>; channel?: unknown }) {
   const guild = {
     channels: { cache: { get: () => options.channel }, fetch: options.fetchChannel ?? (async () => options.channel) },
     members: { fetch: options.fetchMember }
@@ -226,6 +226,36 @@ describe("watch and notification flow", () => {
     await state.notifications.inspect({ id: "role-at-capacity", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-splatoon"], mentionEveryone: false }, visibility);
     expect((state.db.raw.prepare("SELECT status, last_error FROM notification_queue WHERE message_id='everyone-before-role'").get() as { status: string; last_error: string })).toMatchObject({ status: "failed", last_error: "evicted by role mention priority" });
     expect((state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='role-at-capacity'").get() as { status: string }).status).toBe("pending");
+  });
+
+  it("uses direct priority for a direct plus role plus everyone message", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }); await registerMain(state.accounts); await link(state.accounts, "main", "a", "A"); await link(state.accounts, "main", "b", "B"); await link(state.accounts, "main", "c", "C");
+    const roles = new Map([["a", [] as string[]], ["b", ["role-splatoon"]], ["c", [] as string[]]]);
+    const visibility = { isMember: async () => true, getMemberRoleIds: async (userId: string) => roles.get(userId) ?? [], canViewChannel: async () => true };
+    await state.notifications.inspect({ id: "mixed-direct-role-everyone", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionedRoleIds: ["role-splatoon"], mentionEveryone: true }, visibility);
+    const row = state.db.raw.prepare("SELECT mention_type, target_user_ids, target_kinds, available_at FROM notification_queue WHERE message_id='mixed-direct-role-everyone'").get() as { mention_type: string; target_user_ids: string; target_kinds: string; available_at: number };
+    expect(row).toMatchObject({ mention_type: "direct", target_user_ids: '["a","b","c"]', target_kinds: '["direct","role","everyone"]', available_at: 1_000 });
+  });
+
+  it("uses role priority for a role plus everyone message and keeps both targets", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }); await registerMain(state.accounts); await link(state.accounts, "main", "b", "B"); await link(state.accounts, "main", "c", "C");
+    const roles = new Map([["b", ["role-splatoon"]], ["c", [] as string[]]]);
+    const visibility = { isMember: async () => true, getMemberRoleIds: async (userId: string) => roles.get(userId) ?? [], canViewChannel: async () => true };
+    await state.notifications.inspect({ id: "mixed-role-everyone", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-splatoon"], mentionEveryone: true }, visibility);
+    const row = state.db.raw.prepare("SELECT mention_type, target_kinds, available_at FROM notification_queue WHERE message_id='mixed-role-everyone'").get() as { mention_type: string; target_kinds: string; available_at: number };
+    expect(row).toMatchObject({ mention_type: "role", target_kinds: '["role","everyone"]', available_at: 1_000 });
+    const client = mockClient({ channel: visibleChannel(), fetchMember: async (userId) => roleMember(userId === "b" ? ["role-splatoon"] : []) });
+    const sent: string[] = [];
+    expect(await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 1_000, 50, { authorize: (input) => authorizeQueuedNotification(client, state.accounts, input) })).toEqual({ sent: 1, failed: 0 });
+    expect(sent[0]).toContain("ロールメンション");
+  });
+
+  it("uses direct priority for a direct plus everyone message", async () => {
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }); await registerMain(state.accounts); await link(state.accounts, "main", "a", "A"); await link(state.accounts, "main", "c", "C");
+    const visibility = { isMember: async () => true, getMemberRoleIds: async () => [], canViewChannel: async () => true };
+    await state.notifications.inspect({ id: "mixed-direct-everyone", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: true }, visibility);
+    const row = state.db.raw.prepare("SELECT mention_type, target_kinds, available_at FROM notification_queue WHERE message_id='mixed-direct-everyone'").get() as { mention_type: string; target_kinds: string; available_at: number };
+    expect(row).toMatchObject({ mention_type: "direct", target_kinds: '["direct","everyone"]', available_at: 1_000 });
   });
 
   it("does not notify a role while watch is off", async () => {

@@ -70,15 +70,16 @@ export class AccountService {
     `).get(requesterId, target, target, requesterId, target) as { subUserId: string; mainUserId: string } | undefined;
     if (!row) return 0;
     const tx = this.db.raw.transaction(() => {
-      const queued = this.db.raw.prepare("SELECT id, target_user_ids, target_labels FROM notification_queue WHERE main_user_id=? AND status IN ('pending','processing')").all(row.mainUserId) as Array<{ id: number; target_user_ids: string; target_labels: string }>;
+      const queued = this.db.raw.prepare("SELECT id, target_user_ids, target_labels, target_kinds FROM notification_queue WHERE main_user_id=? AND status IN ('pending','processing')").all(row.mainUserId) as Array<{ id: number; target_user_ids: string; target_labels: string; target_kinds?: string }>;
       for (const item of queued) {
         const targetIds = JSON.parse(item.target_user_ids) as string[];
         const targetLabels = JSON.parse(item.target_labels) as string[];
-        const keep = targetIds.map((userId, index) => ({ userId, label: targetLabels[index] ?? userId })).filter((target) => target.userId !== row.subUserId);
+        const targetKinds = JSON.parse(item.target_kinds ?? "[]") as string[];
+        const keep = targetIds.map((userId, index) => ({ userId, label: targetLabels[index] ?? userId, kind: targetKinds.length === targetIds.length ? targetKinds[index] : undefined })).filter((target) => target.userId !== row.subUserId);
         if (keep.length === 0) {
           this.db.raw.prepare("UPDATE notification_queue SET status='cancelled', last_error='account unlinked' WHERE id=?").run(item.id);
         } else {
-          this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=? WHERE id=?").run(JSON.stringify(keep.map((target) => target.userId)), JSON.stringify(keep.map((target) => target.label)), item.id);
+          this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=?, target_kinds=? WHERE id=?").run(JSON.stringify(keep.map((target) => target.userId)), JSON.stringify(keep.map((target) => target.label)), JSON.stringify(keep.every((target) => target.kind !== undefined) ? keep.map((target) => target.kind) : []), item.id);
         }
       }
       this.db.raw.prepare("DELETE FROM link_codes WHERE main_user_id=?").run(row.mainUserId);
@@ -110,13 +111,14 @@ export class AccountService {
     const sub = this.db.raw.prepare("SELECT sub_user_id AS subUserId, main_user_id AS mainUserId FROM account_links WHERE sub_user_id=?").get(userId) as { subUserId: string; mainUserId: string } | undefined;
     if (!sub) return "none";
     const tx = this.db.raw.transaction(() => {
-      const queued = this.db.raw.prepare("SELECT id, target_user_ids, target_labels FROM notification_queue WHERE main_user_id=? AND status IN ('pending','processing')").all(sub.mainUserId) as Array<{ id: number; target_user_ids: string; target_labels: string }>;
+      const queued = this.db.raw.prepare("SELECT id, target_user_ids, target_labels, target_kinds FROM notification_queue WHERE main_user_id=? AND status IN ('pending','processing')").all(sub.mainUserId) as Array<{ id: number; target_user_ids: string; target_labels: string; target_kinds?: string }>;
       for (const item of queued) {
         const targetIds = JSON.parse(item.target_user_ids) as string[];
         const targetLabels = JSON.parse(item.target_labels) as string[];
-        const keep = targetIds.map((targetId, index) => ({ targetId, label: targetLabels[index] ?? targetId })).filter((target) => target.targetId !== sub.subUserId);
+        const targetKinds = JSON.parse(item.target_kinds ?? "[]") as string[];
+        const keep = targetIds.map((targetId, index) => ({ targetId, label: targetLabels[index] ?? targetId, kind: targetKinds.length === targetIds.length ? targetKinds[index] : undefined })).filter((target) => target.targetId !== sub.subUserId);
         if (keep.length === 0) this.db.raw.prepare("UPDATE notification_queue SET status='cancelled', last_error='account deleted' WHERE id=?").run(item.id);
-        else this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=? WHERE id=?").run(JSON.stringify(keep.map((target) => target.targetId)), JSON.stringify(keep.map((target) => target.label)), item.id);
+        else this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=?, target_kinds=? WHERE id=?").run(JSON.stringify(keep.map((target) => target.targetId)), JSON.stringify(keep.map((target) => target.label)), JSON.stringify(keep.every((target) => target.kind !== undefined) ? keep.map((target) => target.kind) : []), item.id);
       }
       this.db.raw.prepare("DELETE FROM account_links WHERE sub_user_id=?").run(sub.subUserId);
     });

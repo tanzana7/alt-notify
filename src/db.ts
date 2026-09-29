@@ -102,7 +102,7 @@ export class SqliteDatabase {
         id INTEGER PRIMARY KEY AUTOINCREMENT, main_user_id TEXT NOT NULL REFERENCES main_accounts(user_id) ON DELETE CASCADE,
         message_id TEXT NOT NULL, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL CHECK(kind IN ('direct', 'everyone')),
         mention_type TEXT NOT NULL DEFAULT 'direct' CHECK(mention_type IN ('direct', 'role', 'everyone')),
-        target_user_ids TEXT NOT NULL, target_labels TEXT NOT NULL, target_role_ids TEXT NOT NULL DEFAULT '[]',
+        target_user_ids TEXT NOT NULL, target_labels TEXT NOT NULL, target_role_ids TEXT NOT NULL DEFAULT '[]', target_kinds TEXT NOT NULL DEFAULT '[]',
         status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'sent', 'failed', 'cancelled')),
         attempts INTEGER NOT NULL DEFAULT 0, available_at INTEGER NOT NULL, last_error TEXT, created_at INTEGER NOT NULL, sent_at INTEGER
       );
@@ -121,6 +121,7 @@ export class SqliteDatabase {
       this.raw.prepare("UPDATE notification_queue SET mention_type='everyone' WHERE kind='everyone'").run();
     }
     if (!queueColumns.includes("target_role_ids")) this.raw.exec("ALTER TABLE notification_queue ADD COLUMN target_role_ids TEXT NOT NULL DEFAULT '[]'");
+    if (!queueColumns.includes("target_kinds")) this.raw.exec("ALTER TABLE notification_queue ADD COLUMN target_kinds TEXT NOT NULL DEFAULT '[]'");
   }
 
   public cleanup(now = Date.now(), recoverProcessing = true): void {

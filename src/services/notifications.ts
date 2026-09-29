@@ -12,9 +12,9 @@ export interface GuildVisibility { isMember(userId: string): Promise<AccessCheck
 export interface NotificationSender { send(mainUserId: string, content: string): Promise<void>; }
 export interface AuthorizedTarget { userId: string; label: string; }
 export type AuthorizationDecision = { kind: "authorized"; targets: AuthorizedTarget[] } | { kind: "retry"; reason: string; retryAfterMs?: number };
-export interface NotificationAuthorization { authorize(input: { mainUserId: string; guildId: string; channelId: string; kind: MentionKind; targetUserIds: string[]; mentionedRoleIds?: string[] }): Promise<AuthorizedTarget[] | AuthorizationDecision>; }
+export interface NotificationAuthorization { authorize(input: { mainUserId: string; guildId: string; channelId: string; kind: MentionKind; targetUserIds: string[]; targetKinds?: MentionKind[]; mentionedRoleIds?: string[] }): Promise<AuthorizedTarget[] | AuthorizationDecision>; }
 
-interface Group { mainUserId: string; kind: MentionKind; targetLabels: string[]; targetUserIds: string[]; mentionedRoleIds: string[]; }
+interface Group { mainUserId: string; kind: MentionKind; targetLabels: string[]; targetUserIds: string[]; targetKinds: MentionKind[]; mentionedRoleIds: string[]; }
 
 const MAX_AUTHORIZATION_ATTEMPTS = 3;
 
@@ -30,6 +30,10 @@ function decisionFromError(error: unknown, resource: "member" | "channel" | "per
 function retryDelayMs(attempt: number, retryAfterMs?: number): number {
   const exponential = Math.min(500 * (2 ** Math.max(0, attempt - 1)), 10_000);
   return Math.min(Math.max(retryAfterMs ?? exponential, 250), 10_000);
+}
+
+function mentionPriority(kind: MentionKind): number {
+  return kind === "direct" ? 0 : kind === "role" ? 1 : 2;
 }
 
 export class NotificationService {
@@ -60,10 +64,10 @@ export class NotificationService {
       if (member.kind === "denied") continue;
       const directMatch = message.mentionedUserIds.includes(candidate.subUserId);
       let roleMatch = false;
-      // Direct and everyone mentions already identify the target. Only a
-      // role-only message needs a member-role lookup, keeping normal traffic
-      // cheap and preserving existing everyone semantics for mixed posts.
-      if (member.kind === "allowed" && !directMatch && !message.mentionEveryone && mentionedRoleIds.length > 0) {
+      // Direct mentions already identify the target. Role IDs require a member
+      // lookup; everyone remains a fallback for linked subs without a matched
+      // role in the same message.
+      if (member.kind === "allowed" && !directMatch && mentionedRoleIds.length > 0) {
         if (!visibility.getMemberRoleIds) {
           member = { kind: "retry", reason: "temporary discord api failure" };
         } else {
@@ -88,9 +92,10 @@ export class NotificationService {
       const kind: MentionKind = directMatch ? "direct" : roleMatch ? "role" : "everyone";
       const label = labels.get(candidate.subUserId) ?? candidate.username;
       if (existing) {
-        if (!existing.targetUserIds.includes(candidate.subUserId)) { existing.targetUserIds.push(candidate.subUserId); existing.targetLabels.push(label); }
+        if (!existing.targetUserIds.includes(candidate.subUserId)) { existing.targetUserIds.push(candidate.subUserId); existing.targetLabels.push(label); existing.targetKinds.push(kind); }
         if (kind === "direct") existing.kind = "direct";
-      } else groups.set(candidate.mainUserId, { mainUserId: candidate.mainUserId, kind, targetUserIds: [candidate.subUserId], targetLabels: [label], mentionedRoleIds: kind === "role" ? [...mentionedRoleIds] : [] });
+        if (mentionPriority(kind) < mentionPriority(existing.kind)) existing.kind = kind;
+      } else groups.set(candidate.mainUserId, { mainUserId: candidate.mainUserId, kind, targetUserIds: [candidate.subUserId], targetLabels: [label], targetKinds: [kind], mentionedRoleIds: kind === "role" ? [...mentionedRoleIds] : [] });
       if (existing && kind === "role") for (const roleId of mentionedRoleIds) if (!existing.mentionedRoleIds.includes(roleId)) existing.mentionedRoleIds.push(roleId);
     }
     let enqueued = 0;
@@ -114,15 +119,15 @@ export class NotificationService {
             const evictionReason = group.kind === "direct" ? "evicted by direct mention priority" : "evicted by role mention priority";
             this.db.raw.prepare("UPDATE notification_queue SET status='failed', last_error=? WHERE id=? AND status='pending'").run(evictionReason, evicted.id);
             effectivePendingCount--;
-            this.logger.warn("everyone notification evicted for direct mention priority", { mainUserId: group.mainUserId, evictedQueueId: evicted.id });
+            this.logger.warn("lower priority notification evicted", { mainUserId: group.mainUserId, priority: group.kind, evictedQueueId: evicted.id });
           }
         }
         if (effectivePendingCount >= maxPending) {
-          this.db.raw.prepare("INSERT INTO notification_queue(main_user_id, message_id, guild_id, channel_id, kind, mention_type, target_user_ids, target_labels, target_role_ids, status, last_error, available_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?)").run(group.mainUserId, message.id, message.guildId, message.channelId ?? "", group.kind === "role" ? "direct" : group.kind, group.kind, JSON.stringify(group.targetUserIds), JSON.stringify(group.targetLabels), JSON.stringify(group.mentionedRoleIds), "notification queue capacity exceeded", availableAt, this.now());
+          this.db.raw.prepare("INSERT INTO notification_queue(main_user_id, message_id, guild_id, channel_id, kind, mention_type, target_user_ids, target_labels, target_role_ids, target_kinds, status, last_error, available_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?)").run(group.mainUserId, message.id, message.guildId, message.channelId ?? "", group.kind === "role" ? "direct" : group.kind, group.kind, JSON.stringify(group.targetUserIds), JSON.stringify(group.targetLabels), JSON.stringify(group.mentionedRoleIds), JSON.stringify(group.targetKinds), "notification queue capacity exceeded", availableAt, this.now());
           this.logger.warn("notification queue capacity exceeded", { mainUserId: group.mainUserId, maxPending });
           return true;
         }
-        this.db.raw.prepare("INSERT INTO notification_queue(main_user_id, message_id, guild_id, channel_id, kind, mention_type, target_user_ids, target_labels, target_role_ids, available_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(group.mainUserId, message.id, message.guildId, message.channelId ?? "", group.kind === "role" ? "direct" : group.kind, group.kind, JSON.stringify(group.targetUserIds), JSON.stringify(group.targetLabels), JSON.stringify(group.mentionedRoleIds), availableAt, this.now());
+        this.db.raw.prepare("INSERT INTO notification_queue(main_user_id, message_id, guild_id, channel_id, kind, mention_type, target_user_ids, target_labels, target_role_ids, target_kinds, available_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(group.mainUserId, message.id, message.guildId, message.channelId ?? "", group.kind === "role" ? "direct" : group.kind, group.kind, JSON.stringify(group.targetUserIds), JSON.stringify(group.targetLabels), JSON.stringify(group.mentionedRoleIds), JSON.stringify(group.targetKinds), availableAt, this.now());
         return true;
       })();
       if (queue) enqueued++;
@@ -144,7 +149,7 @@ export class NotificationService {
       if (authorization) {
         let decision: AuthorizationDecision;
         try {
-          const result = await authorization.authorize({ mainUserId: String(row.main_user_id), guildId: String(row.guild_id), channelId: String(row.channel_id ?? ""), kind: row.mention_type as MentionKind, targetUserIds: targetIds, mentionedRoleIds: JSON.parse(String(row.target_role_ids ?? "[]")) as string[] });
+          const result = await authorization.authorize({ mainUserId: String(row.main_user_id), guildId: String(row.guild_id), channelId: String(row.channel_id ?? ""), kind: row.mention_type as MentionKind, targetUserIds: targetIds, targetKinds: JSON.parse(String(row.target_kinds ?? "[]")) as MentionKind[], mentionedRoleIds: JSON.parse(String(row.target_role_ids ?? "[]")) as string[] });
           decision = Array.isArray(result) ? { kind: "authorized", targets: result } : result;
         } catch (error) {
           const failure = classifyDiscordError(error);
