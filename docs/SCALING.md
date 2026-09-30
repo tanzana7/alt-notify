@@ -111,4 +111,3 @@ Shardを複数process・複数VMに分ける必要が出たとき、SQLite単一
 - [SQLite Transactions](https://www.sqlite.org/lang_transaction.html)
 - [SQLite Write-Ahead Logging](https://www.sqlite.org/wal.html)
 - [SQLite PRAGMA](https://www.sqlite.org/pragma.html)
-

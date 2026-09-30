@@ -49,4 +49,3 @@
 Oracle公式のAlways FreeにはAMD ComputeとArm-based Ampere A1 Computeが含まれます。A1は柔軟なshapeで、公式資料上はAlways Free枠として合計1,500 OCPU時間/月・9,000 GB時間/月、Always Free tenancyでは2 OCPU・12GB相当と説明されています。ただしリージョンの容量、既存リソース、アーキテクチャ互換性、移行時の停止時間を確認してから判断します。今回VM変更は行いません。
 
 参照：[Oracle Cloud Free Tier](https://www.oracle.com/cloud/free/)、[Oracle Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)
-

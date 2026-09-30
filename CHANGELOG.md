@@ -17,4 +17,3 @@
 - `npm audit --omit=dev --audit-level=high`
 - 本番DBバックアップと `integrity_check`
 - Gateway ready、キュー滞留、systemd状態、外部監視設定
-
