@@ -80,17 +80,19 @@ describe("account lifecycle", () => {
     expect(() => accounts.approveLinkByHash("other", accounts.hashForApproval(fresh), "other", 700_003)).toThrow("無効");
   });
 
-  it("allows five free links and rejects the sixth while preserving the developer five-link limit", async () => {
-    const free = await setup();
+  it("allows one Free link and rejects the second while preserving the developer five-link limit", async () => {
+    const free = await setup(undefined, 1);
     await registerMain(free.accounts);
-    for (const sub of ["a", "b", "c", "d", "e"]) await link(free.accounts, "main", sub);
-    expect(free.accounts.getStatus("main").links).toHaveLength(5);
+    await link(free.accounts, "main", "a");
+    expect(free.accounts.getStatus("main").links).toHaveLength(1);
     const code = free.accounts.issueLinkCode("main", 2_000);
-    expect(() => free.accounts.approveLinkByHash("f", free.accounts.hashForApproval(code), "f", 2_001)).toThrow("上限");
+    expect(() => free.accounts.approveLinkByHash("b", free.accounts.hashForApproval(code), "b", 2_001)).toThrow("上限");
     const dev = await setup("dev");
     await registerMain(dev.accounts, "dev", "developer");
     for (const sub of ["a", "b", "c", "d", "e"]) await link(dev.accounts, "dev", sub);
     expect(dev.accounts.getStatus("dev").links).toHaveLength(5);
+    const devCode = dev.accounts.issueLinkCode("dev", 3_000);
+    expect(() => dev.accounts.approveLinkByHash("f", dev.accounts.hashForApproval(devCode), "f", 3_001)).toThrow("上限");
   });
 
   it("can be configured back to a one-link Free limit", async () => {
@@ -98,6 +100,24 @@ describe("account lifecycle", () => {
     await registerMain(state.accounts); await link(state.accounts, "main", "a");
     const code = state.accounts.issueLinkCode("main", 2_000);
     expect(() => state.accounts.approveLinkByHash("b", state.accounts.hashForApproval(code), "b", 2_001)).toThrow("上限");
+  });
+
+  it("preserves existing Free links above a newly lowered limit", async () => {
+    const state = await setup(undefined, 5);
+    await registerMain(state.accounts); await link(state.accounts, "main", "a"); await link(state.accounts, "main", "b");
+    const lowered = new AccountService(state.db, undefined, "test-pepper", 1);
+    expect(lowered.getStatus("main").links).toHaveLength(2);
+    const code = lowered.issueLinkCode("main", 2_000);
+    expect(() => lowered.approveLinkByHash("c", lowered.hashForApproval(code), "c", 2_001)).toThrow("上限");
+    expect(lowered.getStatus("main").links).toHaveLength(2);
+  });
+
+  it("allows one new Free link after unlinking the existing link", async () => {
+    const state = await setup(undefined, 1);
+    await registerMain(state.accounts); await link(state.accounts, "main", "a");
+    expect(state.accounts.unlink("main", "a")).toBe(1);
+    await expect(link(state.accounts, "main", "b")).resolves.toBeDefined();
+    expect(state.accounts.getStatus("main").links).toHaveLength(1);
   });
 
   it("allows only the requesting user to consume an approval button", async () => {

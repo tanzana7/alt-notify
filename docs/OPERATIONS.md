@@ -55,7 +55,7 @@ sudo systemctl start alt-notify.service
 5. Oracleで`npm ci --omit=dev`、systemd reload、`systemctl restart alt-notify.service`。
 6. `status`、Gateway ready、DB整合性、既存連携、pendingキューを確認。
 
-環境変数の変更時は `/etc/altnoti.env`を直接ログ出力せず、必要なキー名だけをレビューする。Freeのテスト上限は`FREE_LINK_LIMIT=5`で、将来戻す場合は値だけを`1`へ変更してサービスを再起動する。
+環境変数の変更時は `/etc/altnoti.env`を直接ログ出力せず、必要なキー名だけをレビューする。公開βの通常Free上限は`FREE_LINK_LIMIT=1`です。開発者・テスト用権限とPro枠はアプリ側で5件を維持します。既存の超過連携は削除せず、新規連携だけを拒否します。
 
 ## Token更新
 

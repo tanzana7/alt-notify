@@ -57,7 +57,7 @@ npm start
 | `DISCORD_DEV_GUILD_ID` | 任意 | 開発用サーバーID |
 | `OWNER_DISCORD_ID` | 任意 | `/admin-stats`を使える管理者ID |
 | `DATABASE_PATH` | 任意 | SQLiteファイル。既定は`./data/discord-alt-notify.sqlite` |
-| `FREE_LINK_LIMIT` | 任意 | Freeプランのサブアカウント連携上限。テスト期間中の既定値は`5` |
+| `FREE_LINK_LIMIT` | 任意 | Freeプランのサブアカウント連携上限。β版の既定値は`1` |
 | `MAX_PENDING_PER_MAIN` | 任意 | メインアカウントごとの未送信キュー上限。既定値は`200` |
 | `DM_MIN_INTERVAL_MS` | 任意 | 同一メインアカウントへのDM最小間隔。既定値は`1000`ミリ秒 |
 | `HEALTHCHECKS_HEARTBEAT_URL` | 任意 | HealthchecksのHTTPS heartbeat URL。未設定時は外部送信なし |
@@ -123,7 +123,7 @@ Bot Tokenはチャットへ貼り付けず、Windows PowerShellで`deploy/rotate
 
 ## MVPの制限と今後
 
-- テスト期間中のFreeはサブアカウント5個（`FREE_LINK_LIMIT`で変更可能）、開発者テストIDとPro枠は従来どおり5個です。Proの決済は未実装です。
+- β版の通常Freeユーザーはサブアカウント1個まで無料で連携できます。開発者・テスト用権限とPro枠は従来どおり5個です。Proの決済は未実装です。
 - OAuth2、Web管理画面、課金、過去メッセージ取得は未実装です。
 - Gateway切断中のイベントを完全回収できない場合があります。
 - 公開前の監査結果、バックアップ、障害対応は `docs/SECURITY_AUDIT.md`、`docs/OPERATIONS.md`、`docs/INCIDENT_RESPONSE.md` に記録しています。

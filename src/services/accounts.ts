@@ -6,7 +6,7 @@ export interface AccountStatus { kind: "main" | "sub" | "none"; mainUserId?: str
 
 export class AccountService {
   private readonly failedCodeAttempts = new Map<string, { since: number; count: number }>();
-  public constructor(private readonly db: SqliteDatabase, private readonly developerTestId?: string, private readonly pepper = "", private readonly freeLinkLimit = 5) {}
+  public constructor(private readonly db: SqliteDatabase, private readonly developerTestId?: string, private readonly pepper = "", private readonly freeLinkLimit = 1) {}
 
   public registerMain(userId: string, username: string, testDm: () => Promise<void>, now = Date.now()): Promise<void> {
     return testDm().then(() => {

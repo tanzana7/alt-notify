@@ -155,7 +155,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
       if (status.kind === "none") { await privateReply(interaction, "まだ設定されていません。メインアカウントなら /main set を実行してください。"); return; }
       if (status.kind === "main") {
         const links = status.links.length ? status.links.map((link) => `${link.username}${link.watchOffGuilds?.length ? `（個別OFF ${link.watchOffGuilds.length}件）` : "（自動監視）"}`).join("、") : "なし";
-        await privateReply(interaction, `立場：メイン\n連携数：${status.links.length}/${status.linkLimit ?? 5}\n連携中：${links}\n個別OFFサーバー数：${status.watchOffGuilds.length}`);
+        await privateReply(interaction, `立場：メイン\n連携数：${status.links.length}/${status.linkLimit ?? 1}\nβ版Free上限：サブアカウント1つ（開発者・テスト用/Pro：5つ）\n連携中：${links}\n個別OFFサーバー数：${status.watchOffGuilds.length}`);
         return;
       }
       await privateReply(interaction, `立場：サブ\n連携先：${status.mainUsername}\n監視：Bot導入済みで参加中のサーバーを自動監視\n個別OFFサーバー数：${status.watchOffGuilds.length}`);

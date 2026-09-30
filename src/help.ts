@@ -10,6 +10,8 @@ export function helpText(appName: string): string {
 
 /watch on は通常不要です。
 
+β版では、通常Freeユーザーはサブアカウントを1つまで無料で連携できます。開発者・テスト用権限は5つまでです。
+
 【通知対象】
 ・サブ垢への直接メンション
 ・サブ垢が所属するロールへのメンション
