@@ -127,3 +127,4 @@ Bot Tokenはチャットへ貼り付けず、Windows PowerShellで`deploy/rotate
 - OAuth2、Web管理画面、課金、過去メッセージ取得は未実装です。
 - Gateway切断中のイベントを完全回収できない場合があります。
 - 公開前の監査結果、バックアップ、障害対応は `docs/SECURITY_AUDIT.md`、`docs/OPERATIONS.md`、`docs/INCIDENT_RESPONSE.md` に記録しています。
+- β候補の変更履歴は `CHANGELOG.md`、負荷・移行判断は `docs/SCALING.md`、長期運用リスクは `docs/LONG_TERM_OPERATIONS.md` を参照してください。

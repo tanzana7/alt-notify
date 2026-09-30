@@ -7,4 +7,12 @@ data/
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite-*
+*.sqlite3
+backups/
+*.key
+*.pem
+*.tmp
+*.log
 coverage/
