@@ -10,6 +10,8 @@ export type AccessCheck = boolean | AccessDecision;
 export type RoleAccessCheck = string[] | AccessDecision;
 export interface GuildVisibility { isMember(userId: string): Promise<AccessCheck>; getMemberRoleIds?(userId: string): Promise<RoleAccessCheck>; canViewChannel(userId: string): Promise<AccessCheck>; }
 export interface NotificationSender { send(mainUserId: string, content: string): Promise<void>; }
+export interface NotificationDisplayNames { guildName?: string; channelName?: string; }
+export type NotificationDisplayNameResolver = (guildId: string, channelId: string) => NotificationDisplayNames;
 export interface AuthorizedTarget { userId: string; label: string; }
 export type AuthorizationDecision = { kind: "authorized"; targets: AuthorizedTarget[] } | { kind: "retry"; reason: string; retryAfterMs?: number };
 export interface NotificationAuthorization { authorize(input: { mainUserId: string; guildId: string; channelId: string; kind: MentionKind; targetUserIds: string[]; targetKinds?: MentionKind[]; mentionedRoleIds?: string[] }): Promise<AuthorizedTarget[] | AuthorizationDecision>; }
@@ -36,6 +38,33 @@ function mentionPriority(kind: MentionKind): number {
   return kind === "direct" ? 0 : kind === "role" ? 1 : 2;
 }
 
+function safeUserLabel(label: string): string | undefined {
+  const normalized = label.trim().replace(/[\r\n]+/g, " ");
+  // Old or partially authorized queue rows may contain a user ID as the
+  // label. It is useful for internal authorization, but must never leak into
+  // a user-facing DM.
+  if (!normalized || /^\d{15,20}$/.test(normalized)) return undefined;
+  return normalized;
+}
+
+function safeDisplayName(name: string | undefined): string | undefined {
+  const normalized = name?.trim().replace(/[\r\n]+/g, " ");
+  return normalized || undefined;
+}
+
+export function formatNotificationContent(mentionType: MentionKind, targetLabels: string[], displayNames: NotificationDisplayNames = {}): string {
+  const lines = ["🔔 別アカウントにメンションがありました", ""];
+  const kindLabel = mentionType === "direct" ? "直接メンション" : mentionType === "role" ? "ロールメンション" : "全体メンション";
+  lines.push(`種類：${kindLabel}`);
+  const labels = targetLabels.map(safeUserLabel).filter((label): label is string => Boolean(label));
+  if (labels.length > 0) lines.push(`対象：${labels.join("、")}`);
+  const guildName = safeDisplayName(displayNames.guildName);
+  if (guildName) lines.push(`サーバー：${guildName}`);
+  const channelName = safeDisplayName(displayNames.channelName);
+  if (channelName) lines.push(`チャンネル：#${channelName.replace(/^#+/, "")}`);
+  return lines.join("\n");
+}
+
 export class NotificationService {
   private readonly lastSentAt = new Map<string, number>();
 
@@ -44,7 +73,8 @@ export class NotificationService {
     private readonly accounts: AccountService,
     private readonly logger: Logger,
     private readonly now = () => Date.now(),
-    private readonly options: { maxPendingPerMain?: number; minIntervalMs?: number } = {}
+    private readonly options: { maxPendingPerMain?: number; minIntervalMs?: number } = {},
+    private readonly resolveDisplayNames?: NotificationDisplayNameResolver
   ) {}
 
   public async inspect(message: IncomingMessage, visibility: GuildVisibility, labels = new Map<string, string>()): Promise<number> {
@@ -178,7 +208,10 @@ export class NotificationService {
         }
         this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=?, last_error=NULL WHERE id=? AND status='processing'").run(JSON.stringify(targetIds), JSON.stringify(labels), row.id);
       }
-      const content = `🔔 別アカウントにメンションがありました\n\n対象アカウント：${labels.join("、")}\nサーバー：${String(row.guild_id)}\n種類：${row.mention_type === "direct" ? "直接メンション" : row.mention_type === "role" ? "ロールメンション" : "全体メンション"}`;
+      let displayNames: NotificationDisplayNames = {};
+      try { displayNames = this.resolveDisplayNames?.(String(row.guild_id), String(row.channel_id ?? "")) ?? {}; }
+      catch (error) { this.logger.warn("notification display name lookup failed", { queueId: row.id, error: error instanceof Error ? error.message : "unknown" }); }
+      const content = formatNotificationContent(row.mention_type as MentionKind, labels, displayNames);
       try {
         await this.sendWithRetry(() => sender.send(String(row.main_user_id), content));
         this.db.raw.prepare("UPDATE notification_queue SET status='sent', sent_at=? WHERE id=? AND status='processing'").run(now, row.id);

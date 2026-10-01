@@ -35,12 +35,28 @@ const db = await SqliteDatabase.open(config.DATABASE_PATH);
 db.cleanup();
 const accounts = new AccountService(db, config.DEVELOPER_TEST_DISCORD_ID, config.LINK_CODE_PEPPER, config.FREE_LINK_LIMIT);
 const watches = new WatchService(db, accounts);
-const notifications = new NotificationService(db, accounts, logger, () => Date.now(), { maxPendingPerMain: config.MAX_PENDING_PER_MAIN, minIntervalMs: config.DM_MIN_INTERVAL_MS });
-const healthchecks = new HealthcheckService(db, logger, config.HEALTHCHECKS_HEARTBEAT_URL, config.HEALTHCHECKS_MAX_PENDING_QUEUE, config.HEALTHCHECKS_MAX_FAILURES_15M);
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages],
   partials: [Partials.Channel]
 });
+const notifications = new NotificationService(
+  db,
+  accounts,
+  logger,
+  () => Date.now(),
+  { maxPendingPerMain: config.MAX_PENDING_PER_MAIN, minIntervalMs: config.DM_MIN_INTERVAL_MS },
+  (guildId, channelId) => {
+    const guild = client.guilds.cache.get(guildId);
+    const channel = channelId ? guild?.channels.cache.get(channelId) : undefined;
+    const guildName = guild?.name;
+    const channelName = channel && "name" in channel && typeof channel.name === "string" ? channel.name : undefined;
+    return {
+      ...(guildName ? { guildName } : {}),
+      ...(channelName ? { channelName } : {})
+    };
+  }
+);
+const healthchecks = new HealthcheckService(db, logger, config.HEALTHCHECKS_HEARTBEAT_URL, config.HEALTHCHECKS_MAX_PENDING_QUEUE, config.HEALTHCHECKS_MAX_FAILURES_15M);
 const pendingApprovals = new ApprovalStore();
 const pendingDeletions = new ApprovalStore();
 const memberCache = new MemberCache<GuildMember>(5_000);

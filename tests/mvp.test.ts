@@ -6,7 +6,7 @@ import { SqliteDatabase } from "../src/db.js";
 import { AccountService } from "../src/services/accounts.js";
 import { ApprovalStore } from "../src/services/approval.js";
 import { WatchService } from "../src/services/watches.js";
-import { NotificationService } from "../src/services/notifications.js";
+import { NotificationService, formatNotificationContent } from "../src/services/notifications.js";
 import { Logger } from "../src/logger.js";
 import { canUseAdminStats } from "../src/services/permissions.js";
 import { HealthcheckService } from "../src/services/healthcheck.js";
@@ -17,12 +17,12 @@ import { classifyDiscordError } from "../src/services/discord-errors.js";
 
 const resources: Array<{ db: SqliteDatabase; dir: string }> = [];
 
-async function setup(developerTestId?: string, freeLinkLimit = 5, notificationOptions: { maxPendingPerMain?: number; minIntervalMs?: number } = {}) {
+async function setup(developerTestId?: string, freeLinkLimit = 5, notificationOptions: { maxPendingPerMain?: number; minIntervalMs?: number } = {}, displayNameResolver?: (guildId: string, channelId: string) => { guildName?: string; channelName?: string }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "discord-alt-notify-"));
   const db = await SqliteDatabase.open(path.join(dir, "test.sqlite"));
   const accounts = new AccountService(db, developerTestId, "test-pepper", freeLinkLimit);
   const watches = new WatchService(db, accounts);
-  const notifications = new NotificationService(db, accounts, new Logger("error"), () => 1_000, notificationOptions);
+  const notifications = new NotificationService(db, accounts, new Logger("error"), () => 1_000, notificationOptions, displayNameResolver);
   resources.push({ db, dir });
   return { db, dir, accounts, watches, notifications };
 }
@@ -195,6 +195,46 @@ describe("watch and notification flow", () => {
     const sent: string[] = [];
     expect(await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 2_000)).toEqual({ sent: 1, failed: 0 });
     expect(sent[0]).toContain("ロールメンション");
+  });
+
+  it("formats notification DMs with names and never exposes Discord IDs", async () => {
+    const ids = {
+      guild: "123456789012345678",
+      channel: "234567890123456789",
+      message: "345678901234567890",
+      user: "456789012345678901",
+      role: "567890123456789012"
+    };
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }, (guildId, channelId) => {
+      expect(guildId).toBe(ids.guild);
+      expect(channelId).toBe(ids.channel);
+      return { guildName: "ゲーム仲間", channelName: "雑談" };
+    });
+    await registerMain(state.accounts); await link(state.accounts, "main", ids.user, "sub-account-name");
+    await state.notifications.inspect({ id: ids.message, guildId: ids.guild, channelId: ids.channel, authorBot: false, mentionedUserIds: [ids.user], mentionedRoleIds: [ids.role], mentionEveryone: true }, { isMember: async () => true, canViewChannel: async () => true }, new Map([[ids.user, "sub-account-name"]]));
+    const sent: string[] = [];
+    expect(await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 2_000)).toEqual({ sent: 1, failed: 0 });
+    expect(sent[0]).toContain("種類：直接メンション");
+    expect(sent[0]).toContain("対象：sub-account-name");
+    expect(sent[0]).toContain("サーバー：ゲーム仲間");
+    expect(sent[0]).toContain("チャンネル：#雑談");
+    for (const id of Object.values(ids)) expect(sent[0]).not.toContain(id);
+  });
+
+  it("omits unavailable display names and still sends the notification", async () => {
+    const hiddenLabel = "678901234567890123";
+    const state = await setup(undefined, 5, { minIntervalMs: 0 }, () => { throw new Error("cache lookup failed"); });
+    await registerMain(state.accounts); await link(state.accounts, "main", "a", hiddenLabel);
+    await state.notifications.inspect({ id: "display-failure", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true });
+    const sent: string[] = [];
+    expect(await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 2_000)).toEqual({ sent: 1, failed: 0 });
+    expect(sent[0]).toContain("種類：直接メンション");
+    expect(sent[0]).not.toContain(hiddenLabel);
+    expect(sent[0]).not.toContain("サーバー：");
+    expect(sent[0]).not.toContain("チャンネル：");
+    const fallbackContent = formatNotificationContent("role", [hiddenLabel]);
+    expect(fallbackContent).not.toContain(hiddenLabel);
+    expect(fallbackContent).not.toContain("対象：");
   });
 
   it("does not notify a linked sub account without the mentioned role", async () => {
@@ -537,7 +577,7 @@ describe("watch and notification flow", () => {
     expect(await notifications.inspect(message, { isMember: async () => true, canViewChannel: async () => true })).toBe(0);
     const sent: string[] = [];
     expect(await notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 2_000)).toEqual({ sent: 1, failed: 0 });
-    expect(sent[0]).toContain("対象アカウント：a、b");
+    expect(sent[0]).toContain("対象：a、b");
   });
 
   it("delays everyone notifications, ignores bot posts, and checks membership", async () => {
