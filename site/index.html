@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Alt Notifyは、Discordの別アカウントへのメンションを普段使うアカウントへまとめて知らせる通知Botです。">
+  <title>Alt Notify — 別垢の通知も、いつもの垢へ。</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="wrap nav">
+    <a class="brand" href="/">Alt Notify</a>
+    <nav class="nav-links" aria-label="サイトメニュー">
+      <a href="#features">機能</a>
+      <a href="#privacy">Privacy</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+  </header>
+  <main>
+    <section class="wrap hero">
+      <span class="eyebrow">Public Beta</span>
+      <h1>別垢の通知も、<br>いつもの垢へ。</h1>
+      <p class="lead">複数のDiscordアカウントを使っている人向けの通知集約Bot。サブアカウントへのメンションを、普段使っているメインアカウントへDMで知らせます。</p>
+      <div class="actions">
+        <a class="button" href="https://discord.com/oauth2/authorize?client_id=1551215506722132120&amp;scope=bot%20applications.commands&amp;permissions=66560">Botを追加する</a>
+        <a class="button secondary" href="#how">使い方を見る</a>
+      </div>
+    </section>
+    <section id="features" class="section">
+      <div class="wrap">
+        <span class="pill">通知を集約</span>
+        <h2>必要なメンションだけ、いつものDMへ</h2>
+        <p class="section-intro">サブアカウントが所属するサーバーで発生した対象メンションを、メインアカウントへまとめて通知します。</p>
+        <div class="flow">
+          <article class="card"><h3>直接メンション</h3><p>サブアカウント宛てのメンション</p></article>
+          <article class="card"><h3>ロールメンション</h3><p>所属ロールへのメンション</p></article>
+          <article class="card"><h3>@everyone / @here</h3><p>全体メンション</p></article>
+          <article class="card"><h3>メインへDM</h3><p>同じ投稿は1通に集約</p></article>
+        </div>
+      </div>
+    </section>
+    <section id="privacy" class="section">
+      <div class="wrap grid">
+        <article class="card"><h3>本文を保存しません</h3><p>本文解析やMessage Content Intentは使用せず、メンション情報を利用します。</p></article>
+        <article class="card"><h3>添付を保存しません</h3><p>添付ファイルやメッセージ本文を転送・保存しません。</p></article>
+        <article class="card"><h3>IDをDMに表示しません</h3><p>内部処理に必要なDiscord IDは利用しますが、ユーザー向け通知にはSnowflake IDを表示しません。</p></article>
+      </div>
+    </section>
+    <section id="how" class="section">
+      <div class="wrap">
+        <h2>使い方</h2>
+        <div class="grid">
+          <article class="card"><span class="pill">01</span><h3>Botを追加</h3><p>通知したいサーバーにBotを追加します。</p></article>
+          <article class="card"><span class="pill">02</span><h3>メインを設定</h3><p>メインアカウントで <code>/main set</code>。</p></article>
+          <article class="card"><span class="pill">03</span><h3>サブを連携</h3><p><code>/link issue</code> と <code>/link approve</code> で本人承認します。</p></article>
+        </div>
+        <p class="muted">連携後は、Botが導入されサブアカウント自身も参加しているサーバーを自動監視します。</p>
+      </div>
+    </section>
+    <section class="section">
+      <div class="wrap grid">
+        <article class="card pricing"><span class="pill">Public Beta</span><h2>Free</h2><p class="lead">サブアカウント 1個</p><p class="muted">課金機能はまだ提供していません。</p></article>
+        <article id="faq" class="card"><h3>FAQ</h3><dl>
+          <dt>メッセージ本文を読みますか？</dt><dd>本文解析やMessage Content Intentは使用しません。</dd>
+          <dt>サブ垢のTokenは必要ですか？</dt><dd>不要です。</dd>
+          <dt>Botがないサーバーでも使えますか？</dt><dd>使えません。</dd>
+          <dt>無料で何個まで連携できますか？</dt><dd>Public Betaではサブアカウント1個です。</dd>
+          <dt>Discordの通知設定と同じですか？</dt><dd>いいえ。Alt Notify独自の判定です。ロールのミュートや通知抑制は再現しません。</dd>
+        </dl></article>
+      </div>
+    </section>
+  </main>
+  <footer class="wrap">
+    <a href="/privacy.html">Privacy Policy</a>
+    <a href="/terms.html">Terms of Service</a>
+    <a href="https://github.com/tanzana7/alt-notify">GitHub</a>
+    <p>β版のため、通知の到達・即時性・完全性を保証するものではありません。</p>
+  </footer>
+</body>
+</html>

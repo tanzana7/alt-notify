@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="ja">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Alt Notify Privacy Policy"><title>Privacy Policy — Alt Notify</title><link rel="stylesheet" href="/styles.css"></head>
+<body><header class="wrap nav"><a class="brand" href="/">Alt Notify</a><nav class="nav-links"><a href="/terms.html">Terms</a><a href="/">トップ</a></nav></header>
+<main class="wrap legal"><span class="eyebrow">Public Beta</span><h1>Privacy Policy</h1><p class="muted">最終更新：2026-10-02</p>
+<h2>扱う情報</h2><ul><li>Discord User ID、username / display name</li><li>Guild ID / Guild名、Channel ID / Channel名</li><li>Message ID、対象Role ID</li><li>メイン・サブの連携関係、watch設定、plan情報</li><li>通知queue、重複排除、送信試行・retry・エラー情報</li></ul>
+<h2>保存しない情報</h2><p>メッセージ本文、添付ファイル、DM本文、Discordパスワード、Discord User Token、キーワード、全メンバー一覧は保存・転送しません。Message Content Intentも使用しません。</p>
+<h2>利用目的</h2><p>本人承認済みのアカウント連携、通知判定、重複排除、送信再試行、障害調査、バックアップと復元確認に利用します。内部IDは必要な処理に使いますが、ユーザー向け通知DMには表示しません。</p>
+<h2>保存場所とバックアップ</h2><p>本番データは運営者が管理するOracle Cloud VM上のSQLiteに保存し、同一環境内に世代バックアップを保持します。削除後もバックアップ保持期間中は古いデータが残る場合があります。</p>
+<h2>外部サービス</h2><p>Discord公式APIを利用します。HealthchecksのURLが設定されている場合のみ、Gateway・キュー・失敗状態を示すheartbeat/failリクエストを送信します。Discordのメッセージ内容は外部監視へ送信しません。</p>
+<h2>削除</h2><p><code>/unlink</code> は個別連携を解除し、<code>/account delete</code> は本人に紐づく登録データ、監視設定、未送信通知を削除します。バックアップ上のコピーは保持期間まで残る場合があります。</p>
+<h2>お問い合わせ</h2><p>個人情報に関する問い合わせ先は、運営者が案内する連絡先を使用してください。</p>
+</main><footer class="wrap"><a href="/">トップ</a><a href="/terms.html">Terms of Service</a><a href="https://github.com/tanzana7/alt-notify">GitHub</a></footer></body></html>
