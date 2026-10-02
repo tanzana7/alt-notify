@@ -1,12 +1,12 @@
 import { PermissionFlagsBits, type Client, type GuildBasedChannel, type GuildMember } from "discord.js";
 import type { AccountService } from "./accounts.js";
 import { classifyDiscordError } from "./discord-errors.js";
-import type { AuthorizationDecision, MentionKind } from "./notifications.js";
+import type { AuthorizationDecision, AuthorizedTarget, MentionKind, TargetMentionKind } from "./notifications.js";
 
 export async function authorizeQueuedNotification(
   client: Pick<Client, "guilds">,
   accounts: AccountService,
-  input: { mainUserId: string; guildId: string; channelId: string; kind: MentionKind; targetUserIds: string[]; targetKinds?: MentionKind[]; mentionedRoleIds?: string[] }
+  input: { mainUserId: string; guildId: string; channelId: string; kind: MentionKind; targetUserIds: string[]; targetKinds?: TargetMentionKind[]; mentionedRoleIds?: string[] }
 ): Promise<AuthorizationDecision> {
   if (!input.channelId) return { kind: "authorized", targets: [] };
   const guild = client.guilds.cache.get(input.guildId);
@@ -28,7 +28,7 @@ export async function authorizeQueuedNotification(
   const mentionedRoleIds = input.mentionedRoleIds ?? [];
   const targetKinds = input.targetKinds?.length === input.targetUserIds.length ? input.targetKinds : input.targetUserIds.map(() => input.kind);
   const activeLinks = accounts.linkedSubsForGuild(input.guildId).filter((link) => link.mainUserId === input.mainUserId && input.targetUserIds.includes(link.subUserId));
-  const authorized: Array<{ userId: string; label: string }> = [];
+  const authorized: AuthorizedTarget[] = [];
   for (const link of activeLinks) {
     let member: GuildMember;
     try {
@@ -41,8 +41,11 @@ export async function authorizeQueuedNotification(
     }
     try {
       const targetIndex = input.targetUserIds.indexOf(link.subUserId);
-      if (targetKinds[targetIndex] === "role" && !mentionedRoleIds.some((roleId) => member.roles.cache.has(roleId))) continue;
-      if (permissionChannel.permissionsFor(member)?.has(PermissionFlagsBits.ViewChannel)) authorized.push({ userId: link.subUserId, label: link.username });
+      const targetKind = targetKinds[targetIndex];
+      const roleMatch = mentionedRoleIds.some((roleId) => member.roles.cache.has(roleId));
+      if (targetKind === "role" && !roleMatch) continue;
+      const verifiedKind = targetKind === "role_or_everyone" ? (roleMatch ? "role" : "everyone") : targetKind;
+      if (permissionChannel.permissionsFor(member)?.has(PermissionFlagsBits.ViewChannel)) authorized.push({ userId: link.subUserId, label: link.username, ...(verifiedKind ? { kind: verifiedKind } : {}) });
     } catch (error) {
       const failure = classifyDiscordError(error, "permission");
       if (failure.kind === "temporary") return { kind: "retry", reason: failure.reason, ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}) };

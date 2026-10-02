@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 const envSchema = z.object({
-  APP_NAME: z.string().min(1).max(50).default("AltNoti"),
+  APP_NAME: z.string().min(1).max(50).default("Alt Notify"),
   DISCORD_TOKEN: z.string().min(1),
   DISCORD_CLIENT_ID: z.string().min(1),
   DISCORD_DEV_GUILD_ID: z.string().optional(),

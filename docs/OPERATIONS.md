@@ -1,4 +1,4 @@
-# AltNoti 運用手順
+# Alt Notify 運用手順
 
 ## 本番構成
 

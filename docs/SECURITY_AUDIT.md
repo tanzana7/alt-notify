@@ -1,4 +1,4 @@
-# AltNoti 公開前セキュリティ監査
+# Alt Notify 公開前セキュリティ監査
 
 監査日: 2026-09-22  
 対象: TypeScript/discord.js Bot、sql.js SQLite、Oracle Cloud VM、systemd

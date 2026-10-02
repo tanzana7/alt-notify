@@ -18,7 +18,7 @@ import { loadConfig } from "./config.js";
 import { SqliteDatabase } from "./db.js";
 import { Logger } from "./logger.js";
 import { AccountService } from "./services/accounts.js";
-import { WatchService } from "./services/watches.js";
+import { WatchService, memberAccessForWatch } from "./services/watches.js";
 import { NotificationService } from "./services/notifications.js";
 import { getStats } from "./services/stats.js";
 import { ApprovalStore } from "./services/approval.js";
@@ -28,6 +28,8 @@ import { HealthcheckService } from "./services/healthcheck.js";
 import { helpText } from "./help.js";
 import { classifyDiscordError } from "./services/discord-errors.js";
 import { authorizeQueuedNotification } from "./services/authorization.js";
+import { SingleFlight } from "./services/single-flight.js";
+import { UserFacingError, userMessageForError } from "./services/user-error.js";
 
 const config = loadConfig();
 const logger = new Logger(config.LOG_LEVEL);
@@ -60,6 +62,14 @@ const healthchecks = new HealthcheckService(db, logger, config.HEALTHCHECKS_HEAR
 const pendingApprovals = new ApprovalStore();
 const pendingDeletions = new ApprovalStore();
 const memberCache = new MemberCache<GuildMember>(5_000);
+const notificationWorker = new SingleFlight();
+function interactionError(error: unknown, action: string): string {
+  if (error instanceof UserFacingError) return error.message;
+  // Unexpected errors can contain Discord/DB internals. Keep details in the
+  // operator log and give users one actionable, stable response.
+  logger.error("interaction failed", { action, errorName: error instanceof Error ? error.name : "unknown" });
+  return userMessageForError(error);
+}
 
 function privateReply(interaction: ChatInputCommandInteraction | ButtonInteraction, content: string, components?: ActionRowBuilder<ButtonBuilder>[]): Promise<unknown> {
   const message = { content, ...(components ? { components } : {}) };
@@ -143,9 +153,11 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
         await privateReply(interaction, text);
         return;
       }
-      const guild = interaction.guild;
-      if (!guild) { await privateReply(interaction, "サーバー内で実行してください"); return; }
-      await watches.set(interaction.guildId, interaction.user.id, sub === "on", { isMember: async (userId) => { try { await guild.members.fetch(userId); return true; } catch { return false; } } });
+      await watches.set(interaction.guildId, interaction.user.id, sub === "on", memberAccessForWatch(async (userId) => {
+        const guild = interaction.guild;
+        if (!guild) throw new UserFacingError("メンバーを確認できません。時間をおいて再度お試しください。");
+        return guild.members.fetch(userId);
+      }));
       await privateReply(interaction, sub === "on" ? "このサーバーの監視を再開しました。" : "このサーバーの監視をOFFにしました。再起動後も維持されます。");
       return;
     }
@@ -183,8 +195,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
       await privateReply(interaction, `導入サーバー数：${stats.guilds}\nメイン登録数：${stats.mainAccounts}\n連携済みアカウント数：${stats.linkedAccounts}\n本日の通知送信数：${stats.notificationsSentToday}\n送信失敗数：${stats.notificationFailures}\n送信待ち：${stats.pendingQueue}\nGateway：${stats.gatewayReady ? "接続" : "未接続"}`);
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "操作に失敗しました";
-    await privateReply(interaction, message).catch(() => undefined);
+    await privateReply(interaction, interactionError(error, interaction.commandName)).catch(() => undefined);
   }
 }
 
@@ -206,8 +217,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     try {
       pendingDeletions.consume(token, interaction.user.id);
       const result = accounts.deleteAccount(interaction.user.id);
-      await interaction.update({ content: result === "none" ? "削除するデータがありません。" : "保存されていたAltNotiのデータを削除しました。", components: [] });
-    } catch (error) { await privateReply(interaction, error instanceof Error ? error.message : "削除に失敗しました"); }
+      await interaction.update({ content: result === "none" ? "削除するデータがありません。" : "保存されていたAlt Notifyのデータを削除しました。", components: [] });
+    } catch (error) { await privateReply(interaction, interactionError(error, "account delete")); }
     return;
   }
   if (!interaction.customId.startsWith("link-approve:")) return;
@@ -217,7 +228,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const result = accounts.approveLinkByHash(interaction.user.id, codeHash, interaction.user.username);
     await interaction.update({ content: "連携を承認しました。これで設定完了です。\nBotが導入され、サブアカウントが参加しているサーバーを自動監視します。\n通常は /watch on は不要です。", components: [] });
     await client.users.send(result.mainUserId, { content: `サブアカウント「${interaction.user.username}」を連携しました。`, allowedMentions: { parse: [] } }).catch((error: unknown) => logger.warn("link confirmation DM failed", { mainUserId: result.mainUserId, error: error instanceof Error ? error.message : "unknown" }));
-  } catch (error) { await privateReply(interaction, error instanceof Error ? error.message : "連携に失敗しました"); }
+  } catch (error) { await privateReply(interaction, interactionError(error, "link approve")); }
 });
 client.on(Events.MessageCreate, async (message) => {
   try {
@@ -231,18 +242,32 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 const timer = setInterval(() => {
-  void notifications.drain({ send: async (mainUserId, content) => { const user = await client.users.fetch(mainUserId); await user.send({ content, allowedMentions: { parse: [] } }); } }, Date.now(), 50, { authorize: (input) => authorizeQueuedNotification(client, accounts, input) }).catch((error) => logger.error("notification worker failed", { error: error instanceof Error ? error.message : "unknown" }));
+  void notificationWorker.run(() => notifications.drain({ send: async (mainUserId, content) => { const user = await client.users.fetch(mainUserId); await user.send({ content, allowedMentions: { parse: [] } }); } }, Date.now(), 50, { authorize: (input) => authorizeQueuedNotification(client, accounts, input) })).catch((error) => logger.error("notification worker failed", { error: error instanceof Error ? error.message : "unknown" }));
 }, 5_000);
+const memoryCleanupTimer = setInterval(() => {
+  pendingApprovals.cleanup();
+  pendingDeletions.cleanup();
+  accounts.cleanupFailedAttempts();
+  memberCache.cleanup();
+}, 60_000);
+memoryCleanupTimer.unref();
 const cleanupTimer = setInterval(() => {
   try { db.cleanup(Date.now(), false); } catch (error) { logger.error("database cleanup failed", { error: error instanceof Error ? error.message : "unknown" }); }
 }, 60 * 60 * 1_000);
 const healthcheckTimer = config.HEALTHCHECKS_HEARTBEAT_URL ? setInterval(() => { void healthchecks.check(client.ws.status === 0); }, config.HEALTHCHECKS_HEARTBEAT_INTERVAL_MS) : undefined;
 
+let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
   logger.info("shutting down", { signal });
   clearInterval(timer);
+  clearInterval(memoryCleanupTimer);
   clearInterval(cleanupTimer);
   if (healthcheckTimer) clearInterval(healthcheckTimer);
+  // The systemd stop budget is finite. Wait for a claimed DM to be marked
+  // sent/failed before closing SQLite whenever the REST call completes.
+  if (!(await notificationWorker.stop(20_000))) logger.warn("notification worker did not finish before shutdown timeout");
   client.destroy();
   db.close();
 }
@@ -251,11 +276,6 @@ process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
 
 client.login(config.DISCORD_TOKEN).catch((error: unknown) => {
   logger.error("gateway login failed", { error: error instanceof Error ? error.message : "unknown" });
-  // 認証失敗後もワーカーを残すと、閉じたDBへアクセスして二次障害になるため即時停止する。
-  clearInterval(timer);
-  clearInterval(cleanupTimer);
-  if (healthcheckTimer) clearInterval(healthcheckTimer);
-  client.destroy();
-  db.close();
   process.exitCode = 1;
+  void shutdown("gateway login failed");
 });

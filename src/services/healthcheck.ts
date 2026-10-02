@@ -42,7 +42,9 @@ export class HealthcheckService {
   private snapshot(): HealthSnapshot {
     const failedSince = this.now() - 15 * 60 * 1_000;
     const pending = Number((this.db.raw.prepare("SELECT COUNT(*) AS count FROM notification_queue WHERE status IN ('pending','processing')").get() as { count: number }).count);
-    const failedIn15m = Number((this.db.raw.prepare("SELECT COUNT(*) AS count FROM notification_queue WHERE status='failed' AND created_at>=?").get(failedSince) as { count: number }).count);
+    // A failed row is no longer due for delivery. Its available_at stores the
+    // transition time, giving us a failure window without a schema migration.
+    const failedIn15m = Number((this.db.raw.prepare("SELECT COUNT(*) AS count FROM notification_queue WHERE status='failed' AND available_at>=?").get(failedSince) as { count: number }).count);
     return { pending, failedIn15m };
   }
 

@@ -1,11 +1,13 @@
 import crypto from "node:crypto";
 import type { SqliteDatabase } from "../db.js";
+import { UserFacingError } from "./user-error.js";
 
 export type Plan = "free" | "pro" | "developer_test";
 export interface AccountStatus { kind: "main" | "sub" | "none"; mainUserId?: string; mainUsername?: string; plan?: Plan; linkLimit?: number; links: Array<{ userId: string; username: string; watchOffGuilds?: string[] }>; watches: string[]; watchOffGuilds: string[]; }
 
 export class AccountService {
   private readonly failedCodeAttempts = new Map<string, { since: number; count: number }>();
+  private readonly maxFailedAttemptUsers = 1_000;
   public constructor(private readonly db: SqliteDatabase, private readonly developerTestId?: string, private readonly pepper = "", private readonly freeLinkLimit = 1) {}
 
   public registerMain(userId: string, username: string, testDm: () => Promise<void>, now = Date.now()): Promise<void> {
@@ -32,8 +34,9 @@ export class AccountService {
   }
 
   public previewLinkCode(subUserId: string, code: string, now = Date.now()): { mainUserId: string; mainUsername: string } {
+    if (this.failedCodeAttempts.size >= this.maxFailedAttemptUsers) this.cleanupFailedAttempts(now);
     const attempt = this.failedCodeAttempts.get(subUserId);
-    if (attempt && attempt.since + 60_000 > now && attempt.count >= 5) throw new Error("試行回数が多すぎます。しばらく待ってください");
+    if (attempt && attempt.since + 60_000 > now && attempt.count >= 5) throw new UserFacingError("試行回数が多すぎます。しばらく待ってください");
     try {
       const row = this.getCodeRow(this.hashCode(code));
       this.validateCode(row, subUserId, now);
@@ -41,10 +44,17 @@ export class AccountService {
       return { mainUserId: row.mainUserId, mainUsername: row.mainUsername };
     } catch (error) {
       const current = attempt && attempt.since + 60_000 > now ? attempt : { since: now, count: 0 };
+      if (!this.failedCodeAttempts.has(subUserId) && this.failedCodeAttempts.size >= this.maxFailedAttemptUsers) this.failedCodeAttempts.delete(this.failedCodeAttempts.keys().next().value!);
       this.failedCodeAttempts.set(subUserId, { since: current.since, count: current.count + 1 });
       throw error;
     }
   }
+
+  public cleanupFailedAttempts(now = Date.now()): void {
+    for (const [userId, attempt] of this.failedCodeAttempts) if (attempt.since + 60_000 <= now) this.failedCodeAttempts.delete(userId);
+  }
+
+  public get failedAttemptUsers(): number { return this.failedCodeAttempts.size; }
 
   public approveLinkByHash(subUserId: string, codeHash: string, username: string, now = Date.now()): { mainUserId: string; mainUsername: string } {
     const tx = this.db.raw.transaction(() => {
@@ -54,7 +64,7 @@ export class AccountService {
       const entitlement = this.db.raw.prepare("SELECT plan FROM entitlements WHERE user_id=?").get(row.mainUserId) as { plan: Plan } | undefined;
       // Proと開発者テスト枠は従来どおり5。テスト期間中に変更するのはFreeだけ。
       const limit = entitlement?.plan === "developer_test" || entitlement?.plan === "pro" ? 5 : this.freeLinkLimit;
-      if (count >= limit) throw new Error("連携可能なサブアカウント数の上限に達しています");
+      if (count >= limit) throw new UserFacingError("連携可能なサブアカウント数の上限に達しています");
       this.db.raw.prepare("INSERT INTO account_links(sub_user_id, main_user_id, username, created_at) VALUES (?, ?, ?, ?)").run(subUserId, row.mainUserId, username, now);
       this.db.raw.prepare("UPDATE link_codes SET used_at=? WHERE code_hash=? AND used_at IS NULL").run(now, codeHash);
       return { mainUserId: row.mainUserId, mainUsername: row.mainUsername };
@@ -163,17 +173,17 @@ export class AccountService {
 
   private getCodeRow(codeHash: string): { mainUserId: string; mainUsername: string; expiresAt: number; usedAt: number | null } {
     const row = this.db.raw.prepare(`SELECT c.main_user_id AS mainUserId, m.username AS mainUsername, c.expires_at AS expiresAt, c.used_at AS usedAt FROM link_codes c JOIN main_accounts m ON m.user_id=c.main_user_id WHERE c.code_hash=?`).get(codeHash) as { mainUserId: string; mainUsername: string; expiresAt: number; usedAt: number | null } | undefined;
-    if (!row) throw new Error("連携コードが無効または期限切れです");
+    if (!row) throw new UserFacingError("連携コードが無効または期限切れです");
     return row;
   }
 
   private validateCode(row: { mainUserId: string; expiresAt: number; usedAt: number | null }, subUserId: string, now: number): void {
-    if (row.usedAt !== null || row.expiresAt <= now) throw new Error("連携コードが無効または期限切れです");
-    if (row.mainUserId === subUserId) throw new Error("自分自身は連携できません");
-    if (this.db.raw.prepare("SELECT 1 FROM account_links WHERE sub_user_id=?").get(subUserId)) throw new Error("このアカウントは既に連携済みです");
+    if (row.usedAt !== null || row.expiresAt <= now) throw new UserFacingError("連携コードが無効または期限切れです");
+    if (row.mainUserId === subUserId) throw new UserFacingError("自分自身は連携できません");
+    if (this.db.raw.prepare("SELECT 1 FROM account_links WHERE sub_user_id=?").get(subUserId)) throw new UserFacingError("このアカウントは既に連携済みです");
   }
 
-  private requireMain(userId: string): void { if (!this.db.raw.prepare("SELECT 1 FROM main_accounts WHERE user_id=?").get(userId)) throw new Error("先に /main set を実行してください"); }
+  private requireMain(userId: string): void { if (!this.db.raw.prepare("SELECT 1 FROM main_accounts WHERE user_id=?").get(userId)) throw new UserFacingError("先に /main set を実行してください"); }
   private hashCode(code: string): string { return crypto.createHash("sha256").update(`${this.pepper}:${code}`).digest("hex"); }
   public hashForApproval(code: string): string { return this.hashCode(code); }
 }
