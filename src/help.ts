@@ -20,7 +20,7 @@ export function helpText(appName: string): string {
 ロールメンションはDiscord本体の通知設定とは独立して判定します。
 
 【通知対象外】
-・普通のメッセージ、DM、キーワード
+・普通のメッセージ、DM、非公開スレッド、キーワード
 ・メッセージ本文
 
 【設定】

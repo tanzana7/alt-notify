@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { ChannelType } from "discord.js";
 import { SqliteDatabase } from "../src/db.js";
 import { Logger } from "../src/logger.js";
 import { AccountService } from "../src/services/accounts.js";
@@ -37,14 +38,141 @@ afterEach(() => {
 const roleMessage = (id: string, everyone = false): IncomingMessage => ({ id, guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: [], mentionedRoleIds: ["role-a"], mentionEveryone: everyone });
 const visibleChannel = { permissionsFor: () => ({ has: () => true }) };
 function memberWithRoles(roles: string[]) { return { roles: { cache: new Map(roles.map((id) => [id, {}])) } }; }
-function clientFor(fetchMember: () => Promise<unknown>) {
-  const guild = { channels: { cache: { get: () => visibleChannel } }, members: { fetch: fetchMember } };
+function clientFor(fetchMember: () => Promise<unknown>, channel: unknown = visibleChannel) {
+  const guild = { channels: { cache: { get: () => channel }, fetch: async () => channel }, members: { fetch: fetchMember } };
   return { guilds: { cache: { get: () => guild } } } as never;
+}
+function freshClient(fetchChannel: () => Promise<unknown>, fetchMember: () => Promise<unknown>) {
+  const channelRequests: Array<{ id: string; force: boolean }> = [];
+  const memberRequests: Array<{ user: string; force: boolean }> = [];
+  const guild = {
+    channels: { cache: { get: () => visibleChannel }, fetch: async (id: string, options: { force: boolean }) => { channelRequests.push({ id, force: options.force }); return fetchChannel(); } },
+    members: { cache: { get: () => memberWithRoles(["role-a"]) }, fetch: async (options: { user: string; force: boolean }) => { memberRequests.push(options); return fetchMember(); } }
+  };
+  return { client: { guilds: { cache: { get: () => guild } } } as never, channelRequests, memberRequests };
 }
 async function queuedRole(state: Awaited<ReturnType<typeof setup>>, id: string, visibility: { isMember: () => Promise<boolean>; getMemberRoleIds: () => Promise<string[]> }) {
   await state.notifications.inspect(roleMessage(id), { ...visibility, canViewChannel: async () => true });
   return state.db.raw.prepare("SELECT mention_type, target_role_ids, target_kinds, available_at, status FROM notification_queue WHERE message_id=?").get(id) as { mention_type: string; target_role_ids: string; target_kinds: string; available_at: number; status: string };
 }
+
+describe("private threads and fresh delivery authorization", () => {
+  const visibility = { isMember: async () => true, getMemberRoleIds: async () => ["role-a"], canViewChannel: async () => true };
+  const directMessage = (id: string): IncomingMessage => ({ id, guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["sub"], mentionEveryone: false });
+
+  it.each(["direct", "role", "everyone"] as const)("does not inspect private-thread %s mentions", async (kind) => {
+    const state = await setup();
+    const message = kind === "direct" ? directMessage(kind) : kind === "role" ? roleMessage(kind) : { ...roleMessage(kind), mentionedRoleIds: [], mentionEveryone: true };
+    expect(await state.notifications.inspect({ ...message, privateThread: true }, { isMember: async () => { throw new Error("private thread must not fetch members"); }, canViewChannel: async () => { throw new Error("private thread must not check permissions"); } })).toBe(0);
+    expect(state.db.raw.prepare("SELECT COUNT(*) AS count FROM notification_queue").get()?.count).toBe(0);
+  });
+
+  it.each(["direct", "role", "everyone"] as const)("cancels queued private-thread %s mentions before delivery", async (kind) => {
+    const state = await setup();
+    const message = kind === "direct" ? directMessage(kind) : kind === "role" ? roleMessage(kind) : { ...roleMessage(kind), mentionedRoleIds: [], mentionEveryone: true };
+    await state.notifications.inspect(message, visibility);
+    const sent: string[] = [];
+    const privateChannel = { type: ChannelType.PrivateThread, permissionsFor: () => ({ has: () => true }) };
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, kind === "everyone" ? 61_000 : 1_000, 50, { authorize: (input) => authorizeQueuedNotification(clientFor(async () => memberWithRoles(["role-a"]), privateChannel), state.accounts, input) });
+    expect(sent).toHaveLength(0);
+    expect(state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id=?").get(kind)?.status).toBe("cancelled");
+  });
+
+  it.each([ChannelType.PublicThread, ChannelType.GuildText])("retains notifications in channel type %s", async (type) => {
+    const state = await setup();
+    await state.notifications.inspect(directMessage(`channel-${type}`), visibility);
+    const sent: string[] = [];
+    const channel = { type, permissionsFor: () => ({ has: () => true }) };
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 1_000, 50, { authorize: (input) => authorizeQueuedNotification(clientFor(async () => memberWithRoles([]), channel), state.accounts, input) });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("cancels a direct mention when fresh member fetch proves departure", async () => {
+    const state = await setup();
+    await state.notifications.inspect(directMessage("departed"), visibility);
+    const fresh = freshClient(async () => visibleChannel, async () => { throw { status: 404, code: 10007 }; });
+    const sent: string[] = [];
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 1_000, 50, { authorize: (input) => authorizeQueuedNotification(fresh.client, state.accounts, input) });
+    expect(sent).toHaveLength(0);
+    expect(state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='departed'").get()?.status).toBe("cancelled");
+    expect(fresh.channelRequests).toEqual([{ id: "channel", force: true }]);
+    expect(fresh.memberRequests).toEqual([{ user: "sub", force: true }]);
+  });
+
+  it("cancels a role mention when only the cached member has the role", async () => {
+    const state = await setup();
+    await queuedRole(state, "role-removed", visibility);
+    const fresh = freshClient(async () => visibleChannel, async () => memberWithRoles([]));
+    await state.notifications.drain({ send: async () => { throw new Error("must not send"); } }, 1_000, 50, { authorize: (input) => authorizeQueuedNotification(fresh.client, state.accounts, input) });
+    expect(state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='role-removed'").get()?.status).toBe("cancelled");
+    expect(fresh.memberRequests).toEqual([{ user: "sub", force: true }]);
+  });
+
+  it("cancels when only the cached channel grants ViewChannel", async () => {
+    const state = await setup();
+    await state.notifications.inspect(directMessage("permission-removed"), visibility);
+    const fresh = freshClient(async () => ({ permissionsFor: () => ({ has: () => false }) }), async () => memberWithRoles([]));
+    await state.notifications.drain({ send: async () => { throw new Error("must not send"); } }, 1_000, 50, { authorize: (input) => authorizeQueuedNotification(fresh.client, state.accounts, input) });
+    expect(state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='permission-removed'").get()?.status).toBe("cancelled");
+    expect(fresh.channelRequests).toEqual([{ id: "channel", force: true }]);
+  });
+
+  it("cancels when a fresh channel fetch confirms 404", async () => {
+    const state = await setup();
+    await state.notifications.inspect(directMessage("channel-gone"), visibility);
+    const fresh = freshClient(async () => { throw { status: 404, code: 10003 }; }, async () => memberWithRoles([]));
+    await state.notifications.drain({ send: async () => { throw new Error("must not send"); } }, 1_000, 50, { authorize: (input) => authorizeQueuedNotification(fresh.client, state.accounts, input) });
+    expect(state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='channel-gone'").get()?.status).toBe("cancelled");
+    expect(fresh.memberRequests).toHaveLength(0);
+  });
+
+  it("retries a fresh channel 5xx and sends after recovery", async () => {
+    const state = await setup();
+    await state.notifications.inspect(directMessage("channel-recovered"), visibility);
+    let calls = 0;
+    const fresh = freshClient(async () => { if (++calls === 1) throw { status: 503 }; return visibleChannel; }, async () => memberWithRoles([]));
+    const sent: string[] = [];
+    const authorization = { authorize: (input: Parameters<typeof authorizeQueuedNotification>[2]) => authorizeQueuedNotification(fresh.client, state.accounts, input) };
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 1_000, 50, authorization);
+    expect(state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='channel-recovered'").get()?.status).toBe("pending");
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 1_500, 50, authorization);
+    expect(sent).toHaveLength(1);
+    expect(fresh.channelRequests).toHaveLength(2);
+  });
+
+  it("retries a fresh member 5xx and sends after recovery", async () => {
+    const state = await setup();
+    await state.notifications.inspect(directMessage("fresh-recovery"), visibility);
+    let calls = 0;
+    const fresh = freshClient(async () => visibleChannel, async () => { if (++calls === 1) throw { status: 503 }; return memberWithRoles([]); });
+    const sent: string[] = [];
+    const authorization = { authorize: (input: Parameters<typeof authorizeQueuedNotification>[2]) => authorizeQueuedNotification(fresh.client, state.accounts, input) };
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 1_000, 50, authorization);
+    expect(state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='fresh-recovery'").get()?.status).toBe("pending");
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 1_500, 50, authorization);
+    expect(sent).toHaveLength(1);
+    expect(fresh.memberRequests).toEqual([{ user: "sub", force: true }, { user: "sub", force: true }]);
+  });
+
+  it("retries a fresh channel 5xx, then records failed at the finite limit", async () => {
+    const state = await setup();
+    await state.notifications.inspect({ ...directMessage("fresh-channel-failed"), mentionedUserIds: [], mentionEveryone: true }, visibility);
+    const fresh = freshClient(async () => { throw { status: 503 }; }, async () => memberWithRoles([]));
+    for (const now of [61_000, 61_500, 62_500]) await state.notifications.drain({ send: async () => { throw new Error("must not send"); } }, now, 50, { authorize: (input) => authorizeQueuedNotification(fresh.client, state.accounts, input) });
+    expect(state.db.raw.prepare("SELECT status, last_error FROM notification_queue WHERE message_id='fresh-channel-failed'").get()).toMatchObject({ status: "failed", last_error: "temporary discord api failure" });
+    expect(fresh.channelRequests).toHaveLength(3);
+    expect(fresh.memberRequests).toHaveLength(0);
+  });
+
+  it("fresh-checks membership for delayed everyone notifications", async () => {
+    const state = await setup();
+    await state.notifications.inspect({ ...directMessage("everyone-left"), mentionedUserIds: [], mentionEveryone: true }, visibility);
+    const fresh = freshClient(async () => visibleChannel, async () => { throw { status: 404, code: 10007 }; });
+    await state.notifications.drain({ send: async () => { throw new Error("must not send"); } }, 61_000, 50, { authorize: (input) => authorizeQueuedNotification(fresh.client, state.accounts, input) });
+    expect(state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='everyone-left'").get()?.status).toBe("cancelled");
+    expect(fresh.memberRequests).toEqual([{ user: "sub", force: true }]);
+  });
+});
 
 describe("role candidates survive temporary Discord failures", () => {
   it("retains role IDs when the member lookup returns 5xx and cancels a nonmember of that role", async () => {
@@ -124,6 +252,34 @@ describe("role candidates survive temporary Discord failures", () => {
 });
 
 describe("worker and shutdown", () => {
+  it("uses one bounded nonce across retries and a different nonce for another queue row", async () => {
+    const state = await setup();
+    const visibility = { isMember: async () => true, canViewChannel: async () => true };
+    for (const id of ["nonce-one", "nonce-two"]) await state.notifications.inspect({ id, guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["sub"], mentionEveryone: false }, visibility);
+    const nonces: string[] = [];
+    const sender = { send: async (_id: string, _content: string, nonce: string) => { nonces.push(nonce); if (nonces.length === 1) throw { name: "AbortError" }; } };
+    await state.notifications.drain(sender, 1_000);
+    await state.notifications.drain(sender, 2_000);
+    expect(nonces).toHaveLength(3);
+    expect(nonces[0]).toBe(nonces[1]);
+    expect(nonces[2]).not.toBe(nonces[0]);
+    expect(nonces.every((nonce) => nonce.length <= 25)).toBe(true);
+  });
+
+  it("isolates a rejected nonce to its failed row and continues processing", async () => {
+    const state = await setup();
+    const visibility = { isMember: async () => true, canViewChannel: async () => true };
+    for (const id of ["bad-nonce", "good-nonce"]) await state.notifications.inspect({ id, guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["sub"], mentionEveryone: false }, visibility);
+    let rejectedNonce: string | undefined;
+    const result = await state.notifications.drain({ send: async (_id, _content, nonce) => {
+      rejectedNonce ??= nonce;
+      if (nonce === rejectedNonce) throw Object.assign(new Error("invalid nonce"), { status: 400 });
+    } }, 1_000);
+    expect(result).toEqual({ sent: 1, failed: 1 });
+    expect(state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='bad-nonce'").get()?.status).toBe("failed");
+    expect(state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='good-nonce'").get()?.status).toBe("sent");
+  });
+
   it("skips overlapping ticks and accepts the next tick after completion", async () => {
     const flight = new SingleFlight();
     let release!: () => void;

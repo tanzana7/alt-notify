@@ -44,7 +44,7 @@ async function link(accounts: AccountService, mainId: string, subId: string, use
 function mockClient(options: { fetchMember: (userId: string) => Promise<unknown>; fetchChannel?: () => Promise<unknown>; channel?: unknown }) {
   const guild = {
     channels: { cache: { get: () => options.channel }, fetch: options.fetchChannel ?? (async () => options.channel) },
-    members: { fetch: options.fetchMember }
+    members: { fetch: (request: string | { user: string }) => options.fetchMember(typeof request === "string" ? request : request.user) }
   };
   return { guilds: { cache: { get: () => guild } } } as never;
 }
@@ -184,6 +184,33 @@ describe("account lifecycle", () => {
     expect(accounts.getStatus("sub").kind).toBe("none");
     expect(accounts.getStatus("main").kind).toBe("main");
     expect((db.raw.prepare("SELECT COUNT(*) AS count FROM account_links").get() as { count: number }).count).toBe(0);
+  });
+
+  it("removes a deleted sub from all notification statuses without removing other targets", async () => {
+    const { accounts, db } = await setup();
+    await registerMain(accounts); await link(accounts, "main", "sub", "DeletedName"); await link(accounts, "main", "other", "OtherName");
+    const insert = db.raw.prepare("INSERT INTO notification_queue(main_user_id, message_id, guild_id, channel_id, kind, mention_type, target_user_ids, target_labels, target_kinds, status, available_at, created_at) VALUES ('main', ?, 'guild', 'channel', 'direct', 'direct', ?, ?, ?, ?, 1000, 1000)");
+    for (const status of ["pending", "processing", "sent", "failed", "cancelled"]) {
+      insert.run(`single-${status}`, '["sub"]', '["DeletedName"]', '["direct"]', status);
+      insert.run(`group-${status}`, '["sub","other"]', '["DeletedName","OtherName"]', '["direct","role"]', status);
+    }
+    expect(accounts.deleteAccount("sub")).toBe("sub");
+    for (const status of ["pending", "processing", "sent", "failed", "cancelled"]) {
+      expect(db.raw.prepare("SELECT 1 FROM notification_queue WHERE message_id=?").get(`single-${status}`)).toBeUndefined();
+      expect(db.raw.prepare("SELECT status, target_user_ids, target_labels, target_kinds FROM notification_queue WHERE message_id=?").get(`group-${status}`)).toMatchObject({ status, target_user_ids: '["other"]', target_labels: '["OtherName"]', target_kinds: '["role"]' });
+    }
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM notification_queue WHERE target_user_ids LIKE '%sub%' OR target_labels LIKE '%DeletedName%'").get()?.count).toBe(0);
+    expect(accounts.getStatus("main").links).toHaveLength(1);
+  });
+
+  it("keeps sent history on unlink while stopping pending delivery", async () => {
+    const { accounts, db } = await setup();
+    await registerMain(accounts); await link(accounts, "main", "sub", "Sub");
+    const insert = db.raw.prepare("INSERT INTO notification_queue(main_user_id, message_id, guild_id, channel_id, kind, mention_type, target_user_ids, target_labels, status, available_at, created_at) VALUES ('main', ?, 'guild', 'channel', 'direct', 'direct', '[\"sub\"]', '[\"Sub\"]', ?, 1000, 1000)");
+    insert.run("old-sent", "sent"); insert.run("new-pending", "pending");
+    expect(accounts.unlink("main", "sub")).toBe(1);
+    expect(db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='old-sent'").get()?.status).toBe("sent");
+    expect(db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='new-pending'").get()?.status).toBe("cancelled");
   });
 });
 

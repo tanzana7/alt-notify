@@ -1,4 +1,4 @@
-import { PermissionFlagsBits, type Client, type GuildBasedChannel, type GuildMember } from "discord.js";
+import { ChannelType, PermissionFlagsBits, type Client, type GuildMember } from "discord.js";
 import type { AccountService } from "./accounts.js";
 import { classifyDiscordError } from "./discord-errors.js";
 import type { AuthorizationDecision, AuthorizedTarget, MentionKind, TargetMentionKind } from "./notifications.js";
@@ -14,15 +14,16 @@ export async function authorizeQueuedNotification(
   // briefly and only fail after the queue's finite authorization budget.
   if (!guild) return { kind: "retry", reason: "temporary discord api failure" };
 
-  let channel: GuildBasedChannel | null | undefined = guild.channels.cache.get(input.channelId);
-  if (!channel) {
-    try { channel = await guild.channels.fetch(input.channelId); }
-    catch (error) {
-      const failure = classifyDiscordError(error, "channel");
-      return failure.kind === "temporary" ? { kind: "retry", reason: failure.reason, ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}) } : { kind: "authorized", targets: [] };
-    }
+  // Delivery must not trust cached channel overwrites or member roles. A
+  // private thread also needs thread membership, which this beta does not
+  // collect; exclude it rather than inferring access from its parent channel.
+  let channel;
+  try { channel = await guild.channels.fetch(input.channelId, { force: true }); }
+  catch (error) {
+    const failure = classifyDiscordError(error, "channel");
+    return failure.kind === "temporary" ? { kind: "retry", reason: failure.reason, ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}) } : { kind: "authorized", targets: [] };
   }
-  if (!channel || !("permissionsFor" in channel)) return { kind: "authorized", targets: [] };
+  if (!channel || channel.type === ChannelType.PrivateThread || !("permissionsFor" in channel)) return { kind: "authorized", targets: [] };
 
   const permissionChannel = channel as unknown as { permissionsFor: (member: GuildMember) => { has: (permission: bigint) => boolean } | null };
   const mentionedRoleIds = input.mentionedRoleIds ?? [];
@@ -32,7 +33,7 @@ export async function authorizeQueuedNotification(
   for (const link of activeLinks) {
     let member: GuildMember;
     try {
-      member = await guild.members.fetch(link.subUserId);
+      member = await guild.members.fetch({ user: link.subUserId, force: true });
       if (!member) continue;
     } catch (error) {
       const failure = classifyDiscordError(error, "member");

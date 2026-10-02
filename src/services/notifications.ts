@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { SqliteDatabase } from "../db.js";
 import type { AccountService } from "./accounts.js";
 import type { Logger } from "../logger.js";
@@ -5,12 +6,12 @@ import { classifyDiscordError } from "./discord-errors.js";
 
 export type MentionKind = "direct" | "role" | "everyone";
 export type TargetMentionKind = MentionKind | "role_or_everyone";
-export interface IncomingMessage { id: string; guildId: string | null; channelId?: string; authorBot: boolean; mentionedUserIds: string[]; mentionedRoleIds?: string[]; mentionEveryone: boolean; }
+export interface IncomingMessage { id: string; guildId: string | null; channelId?: string; privateThread?: boolean; authorBot: boolean; mentionedUserIds: string[]; mentionedRoleIds?: string[]; mentionEveryone: boolean; }
 export type AccessDecision = { kind: "allowed" } | { kind: "denied"; reason?: string } | { kind: "retry"; reason: string; retryAfterMs?: number };
 export type AccessCheck = boolean | AccessDecision;
 export type RoleAccessCheck = string[] | AccessDecision;
 export interface GuildVisibility { isMember(userId: string): Promise<AccessCheck>; getMemberRoleIds?(userId: string): Promise<RoleAccessCheck>; canViewChannel(userId: string): Promise<AccessCheck>; }
-export interface NotificationSender { send(mainUserId: string, content: string): Promise<void>; }
+export interface NotificationSender { send(mainUserId: string, content: string, nonce: string): Promise<void>; }
 export interface NotificationDisplayNames { guildName?: string; channelName?: string; }
 export type NotificationDisplayNameResolver = (guildId: string, channelId: string) => NotificationDisplayNames;
 export interface AuthorizedTarget { userId: string; label: string; kind?: MentionKind; }
@@ -37,6 +38,14 @@ function retryDelayMs(attempt: number, retryAfterMs?: number): number {
 
 function mentionPriority(kind: MentionKind): number {
   return kind === "direct" ? 0 : kind === "role" ? 1 : 2;
+}
+
+function notificationNonce(row: Record<string, unknown>): string {
+  // Discord accepts at most 25 characters. Reuse this value for every REST
+  // attempt of one queue row to suppress duplicates within Discord's short
+  // nonce-deduplication window; it is not an indefinite exactly-once guarantee.
+  const digest = createHash("sha256").update(`${row.main_user_id}:${row.message_id}:${row.id}`).digest("base64url");
+  return `an:${digest.slice(0, 22)}`;
 }
 
 function safeUserLabel(label: string): string | undefined {
@@ -79,7 +88,7 @@ export class NotificationService {
   ) {}
 
   public async inspect(message: IncomingMessage, visibility: GuildVisibility, labels = new Map<string, string>()): Promise<number> {
-    if (message.authorBot || !message.guildId) return 0;
+    if (message.authorBot || !message.guildId || message.privateThread) return 0;
     const mentionedRoleIds = message.mentionedRoleIds ?? [];
     // This fast path avoids even the linked-account query for ordinary
     // messages. Role IDs come from Discord's message payload, not content.
@@ -232,7 +241,8 @@ export class NotificationService {
       catch (error) { this.logger.warn("notification display name lookup failed", { queueId: row.id, error: error instanceof Error ? error.message : "unknown" }); }
       const content = formatNotificationContent(deliveryKind, labels, displayNames);
       try {
-        await this.sendWithRetry(() => sender.send(String(row.main_user_id), content));
+        const nonce = notificationNonce(row);
+        await this.sendWithRetry(() => sender.send(String(row.main_user_id), content, nonce));
         const sentAt = Math.max(now, this.now());
         this.db.raw.prepare("UPDATE notification_queue SET status='sent', mention_type=?, sent_at=? WHERE id=? AND status='processing'").run(deliveryKind, sentAt, row.id);
         this.lastSentAt.set(String(row.main_user_id), sentAt);

@@ -3,6 +3,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelType,
   Client,
   Events,
   GatewayIntentBits,
@@ -232,7 +233,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 client.on(Events.MessageCreate, async (message) => {
   try {
-    if (!message.guild || message.author.bot) return;
+    if (!message.guild || message.author.bot || message.channel.type === ChannelType.PrivateThread) return;
     const mentionedUserIds = [...message.mentions.users.keys()];
     const mentionedRoleIds = [...message.mentions.roles.keys()];
     const labels = new Map(mentionedUserIds.map((id) => [id, message.mentions.users.get(id)?.globalName ?? message.mentions.users.get(id)?.username ?? id]));
@@ -242,7 +243,7 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 const timer = setInterval(() => {
-  void notificationWorker.run(() => notifications.drain({ send: async (mainUserId, content) => { const user = await client.users.fetch(mainUserId); await user.send({ content, allowedMentions: { parse: [] } }); } }, Date.now(), 50, { authorize: (input) => authorizeQueuedNotification(client, accounts, input) })).catch((error) => logger.error("notification worker failed", { error: error instanceof Error ? error.message : "unknown" }));
+  void notificationWorker.run(() => notifications.drain({ send: async (mainUserId, content, nonce) => { const user = await client.users.fetch(mainUserId); await user.send({ content, nonce, enforceNonce: true, allowedMentions: { parse: [] } }); } }, Date.now(), 50, { authorize: (input) => authorizeQueuedNotification(client, accounts, input) })).catch((error) => logger.error("notification worker failed", { error: error instanceof Error ? error.message : "unknown" }));
 }, 5_000);
 const memoryCleanupTimer = setInterval(() => {
   pendingApprovals.cleanup();
