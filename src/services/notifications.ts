@@ -154,6 +154,13 @@ export class NotificationService {
         group.targetUserIds = eligible.map((target) => target.userId);
         group.targetLabels = eligible.map((target) => target.label);
         group.targetKinds = eligible.map((target) => target.kind);
+        // A direct target can unlink while inspection is awaiting Discord.
+        // Recalculate priority from survivors so an everyone-only row keeps
+        // its 60-second delay instead of inheriting the removed direct target.
+        group.kind = eligible.reduce<MentionKind>((best, target) => {
+          const kind = target.kind === "role_or_everyone" ? "role" : target.kind;
+          return mentionPriority(kind) < mentionPriority(best) ? kind : best;
+        }, "everyone");
         const result = this.db.raw.prepare("INSERT OR IGNORE INTO notification_dedup(main_user_id, message_id, created_at) VALUES (?, ?, ?)").run(group.mainUserId, message.id, this.now());
         if (result.changes === 0) return false;
         const availableAt = this.now() + (group.kind === "everyone" ? 60_000 : 0);
@@ -264,14 +271,23 @@ export class NotificationService {
               this.db.raw.prepare("UPDATE notification_queue SET status='cancelled', last_error='target inactive before send' WHERE id=? AND status='processing'").run(row.id);
               return undefined;
             }
-            const result = this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=?, target_kinds=?, last_error=NULL WHERE id=? AND status='processing'")
-              .run(JSON.stringify(targets.map((target) => target.userId)), JSON.stringify(targets.map((target) => authorizationSnapshot?.get(target.userId)?.label ?? target.label)), JSON.stringify(targets.every((target) => target.kind !== undefined) ? targets.map((target) => target.kind) : []), row.id);
-            if (result.changes !== 1) return undefined;
             const authorizedKinds = targets.map((target) => authorizationSnapshot?.get(target.userId)?.kind);
             const targetDeliveryKind = authorizedKinds.length === targets.length && authorizedKinds.every((kind): kind is MentionKind => kind !== undefined)
               ? authorizedKinds.reduce((best, kind) => mentionPriority(kind) < mentionPriority(best) ? kind : best, "everyone" as MentionKind)
               : deliveryKind;
-            return { labels: targets.map((target) => authorizationSnapshot?.get(target.userId)?.label ?? target.label), deliveryKind: targetDeliveryKind };
+            const targetIdsJson = JSON.stringify(targets.map((target) => target.userId));
+            const labels = targets.map((target) => authorizationSnapshot?.get(target.userId)?.label ?? target.label);
+            const labelsJson = JSON.stringify(labels);
+            const kindsJson = JSON.stringify(targets.every((target) => target.kind !== undefined) ? targets.map((target) => target.kind) : []);
+            if (targetDeliveryKind === "everyone" && now < Number(row.created_at) + 60_000) {
+              this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=?, target_kinds=?, status='pending', available_at=?, attempts=attempts-1 WHERE id=? AND status='processing'")
+                .run(targetIdsJson, labelsJson, kindsJson, Number(row.created_at) + 60_000, row.id);
+              return undefined;
+            }
+            const result = this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=?, target_kinds=?, last_error=NULL WHERE id=? AND status='processing'")
+              .run(targetIdsJson, labelsJson, kindsJson, row.id);
+            if (result.changes !== 1) return undefined;
+            return { labels, deliveryKind: targetDeliveryKind };
           })();
           if (!active) return false;
           deliveryKind = active.deliveryKind;

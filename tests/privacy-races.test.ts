@@ -85,6 +85,17 @@ describe("local revalidation after inspect checks", () => {
     gate.resolve(true); await inspect;
     expect(state.db.raw.prepare("SELECT target_user_ids, target_labels, target_kinds FROM notification_queue WHERE message_id='inspect-partial'").get()).toMatchObject({ target_user_ids: '["b"]', target_labels: '["B"]', target_kinds: '["direct"]' });
   });
+
+  it("keeps the everyone delay if a direct target unlinks during inspection", async () => {
+    const state = await setup(); await link(state.accounts, "a"); await link(state.accounts, "b");
+    const gate = deferred<boolean>();
+    const inspection = state.notifications.inspect({ id: "inspect-priority", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: true }, {
+      isMember: (id) => id === "a" ? gate.promise : Promise.resolve(true), canViewChannel: async () => true
+    });
+    state.accounts.unlink("a");
+    gate.resolve(true); await inspection;
+    expect(state.db.raw.prepare("SELECT mention_type, target_user_ids, target_kinds, available_at FROM notification_queue WHERE message_id='inspect-priority'").get()).toMatchObject({ mention_type: "everyone", target_user_ids: '["b"]', target_kinds: '["everyone"]', available_at: 61_000 });
+  });
 });
 
 describe("local revalidation before notification delivery", () => {
@@ -131,6 +142,23 @@ describe("local revalidation before notification delivery", () => {
     gate.resolve([{ userId: "a", label: "Deleted Name" }, { userId: "b", label: "Other Name" }]); await draining;
     expect(sent).toHaveLength(1); expect(sent[0]).toContain("Other Name"); expect(sent[0]).not.toContain("Deleted Name");
     expect(state.db.raw.prepare("SELECT target_user_ids, target_labels FROM notification_queue WHERE message_id='drain-partial'").get()).toMatchObject({ target_user_ids: '["b"]', target_labels: '["Other Name"]' });
+  });
+
+  it("defers an everyone-only survivor after the direct target is deleted during authorization", async () => {
+    const state = await setup(); await link(state.accounts, "a", "Deleted Name"); await link(state.accounts, "b", "Other Name");
+    await state.notifications.inspect({ id: "drain-priority", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: true }, { isMember: async () => true, canViewChannel: async () => true });
+    const gate = deferred<Array<{ userId: string; label: string; kind: "direct" | "everyone" }>>();
+    const sent: string[] = [];
+    const draining = state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 1_000, 50, { authorize: () => gate.promise });
+    state.accounts.deleteAccount("a");
+    gate.resolve([{ userId: "a", label: "Deleted Name", kind: "direct" }, { userId: "b", label: "Other Name", kind: "everyone" }]);
+    await draining;
+    expect(sent).toHaveLength(0);
+    expect(state.db.raw.prepare("SELECT status, available_at, target_user_ids FROM notification_queue WHERE message_id='drain-priority'").get()).toMatchObject({ status: "pending", available_at: 61_000, target_user_ids: '["b"]' });
+    await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 61_000, 50, { authorize: async () => [{ userId: "b", label: "Other Name", kind: "everyone" }] });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("全体メンション");
+    expect(sent[0]).not.toContain("Deleted Name");
   });
 
   it("does not send when the queue row is deleted just after authorization resolves", async () => {
