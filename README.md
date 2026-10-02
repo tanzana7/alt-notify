@@ -43,6 +43,7 @@ Alt Notifyは、複数のDiscordアカウントを使う人向けの公開β版�
 - [Privacy Policy](docs/PRIVACY.md)
 - [Terms of Service](docs/TERMS.md)
 - [公開βLP](https://alt-notify.pages.dev/)
+- [公開Terms](https://alt-notify.pages.dev/terms.html) / [公開Privacy](https://alt-notify.pages.dev/privacy.html)
 
 ## β版について
 
