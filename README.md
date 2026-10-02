@@ -35,7 +35,7 @@ Alt Notifyは、複数のDiscordアカウントを使う人向けの公開β版�
 4. サブアカウントで `/link approve code:<コード>` を実行し、本人承認します。
 5. 以後、Botが導入されサブアカウント自身も参加しているサーバーを自動監視します。
 
-通常は `/watch on` 不要です。特定サーバーで停止する場合は `/watch off`、再開は `/watch on`、状態確認は `/watch status` です。連携解除は `/unlink`、保存済みの登録データ全体の削除は `/account delete` です。
+通常は `/watch on` 不要です。特定サーバーで停止する場合は `/watch off`、再開は `/watch on`、状態確認は `/watch status` です。連携解除は `/unlink`、本人の保存済みデータの削除は、unlink後でも `/account delete` で行えます。バックアップ上のコピーは保持期間中残る場合があります。
 
 ## プライバシー
 
