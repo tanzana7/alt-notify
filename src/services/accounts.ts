@@ -118,25 +118,36 @@ export class AccountService {
       tx();
       return "main";
     }
-    const sub = this.db.raw.prepare("SELECT sub_user_id AS subUserId, main_user_id AS mainUserId FROM account_links WHERE sub_user_id=?").get(userId) as { subUserId: string; mainUserId: string } | undefined;
-    if (!sub) return "none";
+    const sub = this.db.raw.prepare("SELECT sub_user_id AS subUserId FROM account_links WHERE sub_user_id=?").get(userId) as { subUserId: string } | undefined;
+    const queued = this.db.raw.prepare("SELECT id, target_user_ids, target_labels, target_kinds FROM notification_queue").all() as Array<{ id: number; target_user_ids: string; target_labels: string; target_kinds?: string }>;
+    const matchingQueue = queued.filter((item) => (JSON.parse(item.target_user_ids) as string[]).includes(userId));
+    const hasWatches = Boolean(this.db.raw.prepare("SELECT 1 FROM guild_watches WHERE sub_user_id=? LIMIT 1").get(userId));
+    if (!sub && matchingQueue.length === 0 && !hasWatches) return "none";
     const tx = this.db.raw.transaction(() => {
       // Account deletion removes this sub's identity from every queue status,
-      // including sent history. Unlink intentionally retains historical rows.
-      const queued = this.db.raw.prepare("SELECT id, target_user_ids, target_labels, target_kinds FROM notification_queue WHERE main_user_id=?").all(sub.mainUserId) as Array<{ id: number; target_user_ids: string; target_labels: string; target_kinds?: string }>;
-      for (const item of queued) {
+      // including rows retained by an earlier unlink. Match the Discord user ID
+      // directly because the link may already be gone (or may have been relinked).
+      this.db.raw.prepare("DELETE FROM guild_watches WHERE sub_user_id=?").run(userId);
+      for (const item of matchingQueue) {
         const targetIds = JSON.parse(item.target_user_ids) as string[];
-        if (!targetIds.includes(sub.subUserId)) continue;
         const targetLabels = JSON.parse(item.target_labels) as string[];
         const targetKinds = JSON.parse(item.target_kinds ?? "[]") as string[];
-        const keep = targetIds.map((targetId, index) => ({ targetId, label: targetLabels[index] ?? targetId, kind: targetKinds.length === targetIds.length ? targetKinds[index] : undefined })).filter((target) => target.targetId !== sub.subUserId);
+        const keep = targetIds.map((targetId, index) => ({ targetId, label: targetLabels[index] ?? targetId, kind: targetKinds.length === targetIds.length ? targetKinds[index] : undefined })).filter((target) => target.targetId !== userId);
         if (keep.length === 0) this.db.raw.prepare("DELETE FROM notification_queue WHERE id=?").run(item.id);
         else this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=?, target_kinds=? WHERE id=?").run(JSON.stringify(keep.map((target) => target.targetId)), JSON.stringify(keep.map((target) => target.label)), JSON.stringify(keep.every((target) => target.kind !== undefined) ? keep.map((target) => target.kind) : []), item.id);
       }
-      this.db.raw.prepare("DELETE FROM account_links WHERE sub_user_id=?").run(sub.subUserId);
+      this.db.raw.prepare("DELETE FROM account_links WHERE sub_user_id=?").run(userId);
     });
     tx();
     return "sub";
+  }
+
+  /** Synchronous DB-only check used at both sides of Discord's async boundary. */
+  public isNotificationTargetActive(mainUserId: string, subUserId: string, guildId: string): boolean {
+    const link = this.db.raw.prepare("SELECT 1 FROM account_links WHERE main_user_id=? AND sub_user_id=? LIMIT 1").get(mainUserId, subUserId);
+    if (!link) return false;
+    const watch = this.db.raw.prepare("SELECT enabled FROM guild_watches WHERE guild_id=? AND sub_user_id=?").get(guildId, subUserId) as { enabled: number } | undefined;
+    return !watch || watch.enabled === 1;
   }
 
   public getStatus(userId: string): AccountStatus {

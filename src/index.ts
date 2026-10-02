@@ -176,7 +176,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
         new ButtonBuilder().setCustomId(`account-delete:${token}`).setLabel("削除する").setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId(`account-delete-cancel:${token}`).setLabel("キャンセル").setStyle(ButtonStyle.Secondary)
       );
-      await privateReply(interaction, `${config.APP_NAME}に保存された連携・監視設定・未送信通知を削除します。この操作は取り消せません。`, [row]);
+      await privateReply(interaction, `${config.APP_NAME}に保存された連携・監視設定・通知履歴など、このアカウントのデータを削除します。バックアップ上のコピーは保持期間中残る場合があります。この操作は取り消せません。`, [row]);
       return;
     }
     if (interaction.commandName === "status") {

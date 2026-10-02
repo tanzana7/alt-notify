@@ -148,6 +148,12 @@ export class NotificationService {
     let enqueued = 0;
     for (const group of groups.values()) {
       const queue = this.db.raw.transaction(() => {
+        const eligible = group.targetUserIds.map((userId, index) => ({ userId, label: group.targetLabels[index] ?? userId, kind: group.targetKinds[index]! }))
+          .filter((target) => this.accounts.isNotificationTargetActive(group.mainUserId, target.userId, message.guildId!));
+        if (eligible.length === 0) return false;
+        group.targetUserIds = eligible.map((target) => target.userId);
+        group.targetLabels = eligible.map((target) => target.label);
+        group.targetKinds = eligible.map((target) => target.kind);
         const result = this.db.raw.prepare("INSERT OR IGNORE INTO notification_dedup(main_user_id, message_id, created_at) VALUES (?, ?, ?)").run(group.mainUserId, message.id, this.now());
         if (result.changes === 0) return false;
         const availableAt = this.now() + (group.kind === "everyone" ? 60_000 : 0);
@@ -196,6 +202,7 @@ export class NotificationService {
       if (claim.changes !== 1) continue;
       let targetIds = JSON.parse(String(row.target_user_ids)) as string[];
       let labels = JSON.parse(String(row.target_labels)) as string[];
+      let authorizedById: Map<string, { label: string; kind?: MentionKind | undefined }> | undefined;
       if (authorization) {
         let decision: AuthorizationDecision;
         try {
@@ -219,9 +226,10 @@ export class NotificationService {
           }
           continue;
         }
-        const authorizedById = new Map(decision.targets.map((target) => [target.userId, target.label]));
-        targetIds = targetIds.filter((userId) => authorizedById.has(userId));
-        labels = targetIds.map((userId) => authorizedById.get(userId) ?? userId);
+        const authorizedTargets = new Map(decision.targets.map((target) => [target.userId, { label: target.label, kind: target.kind }]));
+        authorizedById = authorizedTargets;
+        targetIds = targetIds.filter((userId) => authorizedTargets.has(userId));
+        labels = targetIds.map((userId) => authorizedTargets.get(userId)?.label ?? userId);
         if (targetIds.length === 0) {
           this.db.raw.prepare("UPDATE notification_queue SET status='cancelled', last_error='authorization revoked before send' WHERE id=? AND status='processing'").run(row.id);
           continue;
@@ -234,15 +242,43 @@ export class NotificationService {
           this.db.raw.prepare("UPDATE notification_queue SET status='pending', available_at=?, attempts=attempts-1 WHERE id=? AND status='processing'").run(Number(row.created_at) + 60_000, row.id);
           continue;
         }
-        this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=?, last_error=NULL WHERE id=? AND status='processing'").run(JSON.stringify(targetIds), JSON.stringify(labels), row.id);
       }
       let displayNames: NotificationDisplayNames = {};
       try { displayNames = this.resolveDisplayNames?.(String(row.guild_id), String(row.channel_id ?? "")) ?? {}; }
       catch (error) { this.logger.warn("notification display name lookup failed", { queueId: row.id, error: error instanceof Error ? error.message : "unknown" }); }
-      const content = formatNotificationContent(deliveryKind, labels, displayNames);
       try {
         const nonce = notificationNonce(row);
-        await this.sendWithRetry(() => sender.send(String(row.main_user_id), content, nonce));
+        const authorizationSnapshot = authorizedById;
+        const delivered = await this.sendWithRetry(async () => {
+          // Repeat the DB-only check for every REST attempt. A delete/unlink
+          // during a failed request must not make a later retry send stale PII.
+          const active = this.db.raw.transaction(() => {
+            const current = this.db.raw.prepare("SELECT target_user_ids, target_labels, target_kinds FROM notification_queue WHERE id=? AND status='processing'").get(row.id) as { target_user_ids: string; target_labels: string; target_kinds?: string } | undefined;
+            if (!current) return undefined;
+            const currentIds = JSON.parse(current.target_user_ids) as string[];
+            const currentLabels = JSON.parse(current.target_labels) as string[];
+            const currentKinds = JSON.parse(current.target_kinds ?? "[]") as TargetMentionKind[];
+            const targets = currentIds.map((userId, index) => ({ userId, label: currentLabels[index] ?? userId, kind: currentKinds.length === currentIds.length ? currentKinds[index] : undefined }))
+              .filter((target) => (!authorizationSnapshot || authorizationSnapshot.has(target.userId)) && this.accounts.isNotificationTargetActive(String(row.main_user_id), target.userId, String(row.guild_id)));
+            if (targets.length === 0) {
+              this.db.raw.prepare("UPDATE notification_queue SET status='cancelled', last_error='target inactive before send' WHERE id=? AND status='processing'").run(row.id);
+              return undefined;
+            }
+            const result = this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=?, target_kinds=?, last_error=NULL WHERE id=? AND status='processing'")
+              .run(JSON.stringify(targets.map((target) => target.userId)), JSON.stringify(targets.map((target) => authorizationSnapshot?.get(target.userId)?.label ?? target.label)), JSON.stringify(targets.every((target) => target.kind !== undefined) ? targets.map((target) => target.kind) : []), row.id);
+            if (result.changes !== 1) return undefined;
+            const authorizedKinds = targets.map((target) => authorizationSnapshot?.get(target.userId)?.kind);
+            const targetDeliveryKind = authorizedKinds.length === targets.length && authorizedKinds.every((kind): kind is MentionKind => kind !== undefined)
+              ? authorizedKinds.reduce((best, kind) => mentionPriority(kind) < mentionPriority(best) ? kind : best, "everyone" as MentionKind)
+              : deliveryKind;
+            return { labels: targets.map((target) => authorizationSnapshot?.get(target.userId)?.label ?? target.label), deliveryKind: targetDeliveryKind };
+          })();
+          if (!active) return false;
+          deliveryKind = active.deliveryKind;
+          const content = formatNotificationContent(active.deliveryKind, active.labels, displayNames);
+          return sender.send(String(row.main_user_id), content, nonce).then(() => true);
+        });
+        if (!delivered) continue;
         const sentAt = Math.max(now, this.now());
         this.db.raw.prepare("UPDATE notification_queue SET status='sent', mention_type=?, sent_at=? WHERE id=? AND status='processing'").run(deliveryKind, sentAt, row.id);
         this.lastSentAt.set(String(row.main_user_id), sentAt);
@@ -257,9 +293,9 @@ export class NotificationService {
     return { sent, failed };
   }
 
-  private async sendWithRetry(send: () => Promise<void>): Promise<void> {
+  private async sendWithRetry(send: () => Promise<boolean>): Promise<boolean> {
     for (let attempt = 0; attempt < 3; attempt++) {
-      try { await send(); return; }
+      try { return await send(); }
       catch (error) {
         const failure = classifyDiscordError(error);
         if (attempt === 2 || failure.kind !== "temporary") throw error;
