@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-beta.3 - 2026-10-02
+
+公開βの信頼性・プライバシー修正。
+
+- 非公開スレッドを通知対象外にし、送信直前にも除外
+- 送信直前のauthorizationでGuildMemberとChannelをfresh fetch
+- サブアカウントの`/account delete`時、全通知履歴からそのID・表示名を除去
+- DM retryに同一キュー行で再利用するnonceを設定し、短時間の重複送信を抑止
+
 ## 0.1.0-beta.2 - 2026-10-02
 
 公開βメンテナンスリリース。
