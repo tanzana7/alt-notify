@@ -16,6 +16,8 @@ BotはNode.js＋systemdで動作させる。1GB VMではDocker常駐のオーバ
 
 本番起動ではDBの存在、通常ファイル、非空、SQLite整合性、必須の既存テーブルをGatewayログイン前に検証する。失敗した場合は**起動を中止**し、空DBを自動生成しない。systemdの`ExecStartPre`も非空ファイルを確認する。ローカルのテスト用DB作成は`SqliteDatabase.open`の通常モードで引き続き可能。
 
+継続的な起動失敗は`StartLimitIntervalSec=60s`・`StartLimitBurst=5`と5秒間隔の再試行後に、安定した`failed`へ移行する。再試行中は`systemctl is-failed alt-notify.service`がまだ`failed`を返さない場合がある。最終状態と`journalctl -u alt-notify.service`を併せて確認する。このVMでは起動制限到達後も`Result=exit-code`となり、journalに`Start request repeated too quickly`が記録された。本番DBを使った故障注入は行わず、レート制限の検証には`deploy/alt-notify-startup-failure-test.service`を一時unitとして使う。
+
 ## 状態確認
 
 ```bash

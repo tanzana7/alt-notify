@@ -1,0 +1,11 @@
+[Unit]
+Description=Temporary Alt Notify startup failure rate-limit test
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/false
+ExecStart=/usr/bin/sleep infinity
+Restart=on-failure
+RestartSec=5s
