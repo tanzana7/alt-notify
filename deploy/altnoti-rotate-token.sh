@@ -24,10 +24,17 @@ cleanup() {
   done
 }
 wait_gateway_ready() {
-  local started_at=$1
+  local invocation_id current_id
   for attempt in $(seq 1 60); do
-    if systemctl is-active --quiet alt-notify.service && journalctl -u alt-notify.service --since "$started_at" --output=cat | grep -F '"message":"gateway ready"' >/dev/null; then
-      return 0
+    if systemctl is-active --quiet alt-notify.service; then
+      invocation_id=$(systemctl show alt-notify.service --property=InvocationID --value) || invocation_id=''
+      if [[ -n "$invocation_id" ]] && journalctl "_SYSTEMD_INVOCATION_ID=$invocation_id" --output=cat --no-pager 2>/dev/null | grep -F '"message":"gateway ready"' >/dev/null; then
+        # A restart between reading the journal and accepting ready must not validate an old process.
+        current_id=$(systemctl show alt-notify.service --property=InvocationID --value) || current_id=''
+        if [[ "$current_id" == "$invocation_id" ]] && systemctl is-active --quiet alt-notify.service; then
+          return 0
+        fi
+      fi
     fi
     sleep 1
   done
@@ -45,10 +52,8 @@ rollback() {
   cmp -s "$old_env" /etc/altnoti.env || return 1
   [[ $(stat -c '%U:%G %a' /etc/altnoti.env) == 'root:altnoti 640' ]] || return 1
   systemctl reset-failed alt-notify.service >/dev/null 2>&1 || return 1
-  local started_at
-  started_at=$(date --iso-8601=ns) || return 1
   systemctl start alt-notify.service >/dev/null 2>&1 || return 1
-  wait_gateway_ready "$started_at" || return 1
+  wait_gateway_ready || return 1
   (( stop_failed == 0 ))
 }
 finish() {
@@ -92,13 +97,12 @@ systemctl start altnoti-backup.service
 restart_needed=1
 systemctl stop alt-notify.service
 mv -f "$new_env" /etc/altnoti.env
-started_at=$(date --iso-8601=ns)
 systemctl reset-failed alt-notify.service
 if ! systemctl start alt-notify.service; then
   echo 'new service start failed' >&2
   exit 1
 fi
-if ! wait_gateway_ready "$started_at"; then
+if ! wait_gateway_ready; then
   echo 'gateway ready not confirmed for new configuration' >&2
   exit 1
 fi

@@ -9,7 +9,7 @@
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/src/index.js",
-    "test": "vitest run",
+    "test": "vitest run && node tests/run-recovery.mjs",
     "check": "tsc --noEmit -p tsconfig.json",
     "deploy:commands": "tsx src/deploy-commands.ts"
   },

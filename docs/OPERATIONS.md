@@ -74,7 +74,7 @@ Discord Developer PortalでTokenを再発行した後、Token自体をチャッ�
 .\deploy\rotate-token.ps1
 ```
 
-入力は非表示。スクリプトはOracleでバックアップ、環境ファイルの原子更新、systemd再起動、Gateway ready確認を行う。失敗時は更新前の環境ファイルへ戻してサービスを再起動する。
+入力は非表示。スクリプトはOracleでバックアップ、環境ファイルの原子更新、systemd再起動を行い、現在の`InvocationID`のログでGateway readyを確認する。失敗時は更新前の環境ファイルへ戻してサービスを再起動する。古い起動のreadyログや時刻検索は成功判定に使わない。
 
 既定でWindowsのDesktopからSSH鍵を探し、次にDownloadsを確認する。特殊な配置では`-KeyPath "..."`で上書きする。失敗時は旧env復元だけでなくrollback後のGateway readyを確認する。Portalで旧TokenをReset済みなら旧envへ戻しても復旧しない場合があり、`manual intervention required`を見落とさない。
 
@@ -87,7 +87,7 @@ Discord Developer PortalでTokenを再発行した後、Token自体をチャッ�
 .\deploy\configure-healthcheck.ps1
 ```
 
-SSH鍵の探索順と`-KeyPath "..."`による上書きはToken更新と同じ。設定失敗時は旧env復元後のサービス起動とGateway readyまで確認し、失敗なら手動対応する。
+SSH鍵の探索順と`-KeyPath "..."`による上書きはToken更新と同じ。設定成功には現在の起動のGateway readyと、新しい秘密URLへのHTTP 2xx heartbeatの両方を要する。外部probe失敗時は旧envへ戻し、旧設定でのサービス起動とGateway readyを確認する。URLはコマンドラインやログへ出さない。
 
 Gatewayがreadyで、pending/processingが200未満、直近15分のfailedが5未満の場合だけ成功heartbeatを送る。Gateway未接続時は送信せず、Healthchecks側の期限切れで検知する。閾値を超えた場合は`/fail`を送る。URL未設定時は外部通信しない。
 

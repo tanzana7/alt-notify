@@ -19,10 +19,11 @@ sudo journalctl -u alt-notify.service -n 200 --no-pager
 sudo systemctl reset-failed alt-notify.service
 sudo systemctl start alt-notify.service
 systemctl is-active alt-notify.service
-sudo journalctl -u alt-notify.service --no-pager | grep '"message":"gateway ready"' | tail -1
+invocation_id=$(systemctl show alt-notify.service --property=InvocationID --value)
+test -n "$invocation_id" && sudo journalctl "_SYSTEMD_INVOCATION_ID=$invocation_id" --output=cat --no-pager | grep '"message":"gateway ready"'
 ```
 
-Gateway readyが今回の起動に対応することを時刻で確認し、DBのmain/linkとpending/processing/failed件数を確認する。起動時に処理中キューはpendingへ戻るため、サービスが安定した後に重複送信の有無も確認する。
+Gateway readyを現在のsystemd起動IDと照合し、再起動していないことを再確認してから、DBのmain/linkとpending/processing/failed件数を確認する。起動時に処理中キューはpendingへ戻るため、サービスが安定した後に重複送信の有無も確認する。
 
 ## Gateway切断・通知が届かない
 
