@@ -71,13 +71,36 @@ export class SqliteDatabase {
     this.migrate();
   }
 
-  public static async open(filePath: string): Promise<SqliteDatabase> {
+  public static async open(filePath: string, options: { requireExisting?: boolean } = {}): Promise<SqliteDatabase> {
     const moduleDir = path.dirname(fileURLToPath(import.meta.url));
     const candidates = [path.join(moduleDir, "..", "node_modules", "sql.js", "dist"), path.join(moduleDir, "..", "..", "node_modules", "sql.js", "dist")];
     const wasmDir = candidates.find((candidate) => fs.existsSync(path.join(candidate, "sql-wasm.wasm"))) ?? candidates[0]!;
     const SQL = await initSqlJs({ locateFile: (file) => path.join(wasmDir, file) });
-    const bytes = fs.existsSync(filePath) ? new Uint8Array(fs.readFileSync(filePath)) : undefined;
-    return new SqliteDatabase(filePath, new SQL.Database(bytes));
+    if (!options.requireExisting) {
+      const bytes = fs.existsSync(filePath) ? new Uint8Array(fs.readFileSync(filePath)) : undefined;
+      return new SqliteDatabase(filePath, new SQL.Database(bytes));
+    }
+    // Production must never turn a missing or damaged DB into a fresh empty
+    // installation. Validate the existing file before the constructor migrates
+    // or persists anything, and before index.ts attempts Gateway login.
+    let database: SqlJsDatabase | undefined;
+    try {
+      const stat = fs.lstatSync(filePath);
+      if (!stat.isFile() || stat.size === 0) throw new Error("invalid database file");
+      database = new SQL.Database(new Uint8Array(fs.readFileSync(filePath)));
+      const integrity = database.exec("PRAGMA integrity_check");
+      if (integrity.length !== 1 || integrity[0]?.values.length !== 1 || integrity[0].values[0]?.[0] !== "ok") throw new Error("database integrity failure");
+      const tables = database.exec("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('main_accounts', 'account_links', 'notification_queue')");
+      if (tables[0]?.values.length !== 3) throw new Error("required tables missing");
+      const existing = database;
+      database = undefined;
+      return new SqliteDatabase(filePath, existing);
+    } catch {
+      // A generic error avoids leaking file contents or SQL diagnostics to logs.
+      throw new Error("Existing Alt Notify database validation failed; service not started");
+    } finally {
+      database?.close();
+    }
   }
 
   public close(): void { this.raw.close(); }

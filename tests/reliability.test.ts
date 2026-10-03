@@ -16,13 +16,13 @@ import { UserFacingError, userMessageForError } from "../src/services/user-error
 import { WatchService, memberAccessForWatch } from "../src/services/watches.js";
 
 const resources: Array<{ db: SqliteDatabase; dir: string }> = [];
-async function setup(now = () => 1_000) {
+async function setup(now = () => 1_000, notificationOptions: { maxPendingPerMain?: number; minIntervalMs?: number } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "altnotify-reliability-"));
   const db = await SqliteDatabase.open(path.join(dir, "test.sqlite"));
   resources.push({ db, dir });
   const accounts = new AccountService(db);
   const watches = new WatchService(db, accounts);
-  const notifications = new NotificationService(db, accounts, new Logger("error"), now);
+  const notifications = new NotificationService(db, accounts, new Logger("error"), now, notificationOptions);
   await accounts.registerMain("main", "Main", async () => undefined, 1_000);
   const code = accounts.issueLinkCode("main", 1_000);
   accounts.approveLinkByHash("sub", accounts.hashForApproval(code), "Sub", 1_001);
@@ -244,7 +244,7 @@ describe("role candidates survive temporary Discord failures", () => {
     const authorization = { authorize: (input: Parameters<typeof authorizeQueuedNotification>[2]) => authorizeQueuedNotification(client, state.accounts, input) };
     await state.notifications.drain(sender, 1_000, 50, authorization);
     expect(sent).toHaveLength(0);
-    expect(state.db.raw.prepare("SELECT status, available_at FROM notification_queue WHERE message_id='mixed-unknown'").get()).toMatchObject({ status: "pending", available_at: 61_000 });
+    expect(state.db.raw.prepare("SELECT status, available_at, kind, mention_type, target_kinds FROM notification_queue WHERE message_id='mixed-unknown'").get()).toMatchObject({ status: "pending", available_at: 61_000, kind: "everyone", mention_type: "everyone", target_kinds: '["role_or_everyone"]' });
     await state.notifications.drain(sender, 61_000, 50, authorization);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain("全体メンション");
@@ -267,10 +267,25 @@ describe("role candidates survive temporary Discord failures", () => {
     const authorization = { authorize: (input: Parameters<typeof authorizeQueuedNotification>[2]) => authorizeQueuedNotification(clientFor(async () => memberWithRoles([])), state.accounts, input) };
     await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 1_000, 50, authorization);
     expect(sent).toHaveLength(0);
-    expect(state.db.raw.prepare("SELECT status,available_at FROM notification_queue WHERE message_id='removed-role-everyone'").get()).toMatchObject({ status: "pending", available_at: 61_000 });
+    expect(state.db.raw.prepare("SELECT status,available_at,kind,mention_type,target_kinds FROM notification_queue WHERE message_id='removed-role-everyone'").get()).toMatchObject({ status: "pending", available_at: 61_000, kind: "everyone", mention_type: "everyone", target_kinds: '["role_or_everyone"]' });
     await state.notifications.drain({ send: async (_id, content) => { sent.push(content); } }, 61_000, 50, authorization);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain("全体メンション");
+  });
+
+  it.each(["direct", "role"] as const)("lets a new %s mention evict a delayed everyone fallback", async (incoming) => {
+    const state = await setup(() => 1_000, { maxPendingPerMain: 1, minIntervalMs: 0 });
+    const visible = { isMember: async () => true, getMemberRoleIds: async () => ["role-a"], canViewChannel: async () => true };
+    await state.notifications.inspect(roleMessage(`fallback-before-${incoming}`, true), visible);
+    await state.notifications.drain({ send: async () => { throw new Error("must not send"); } }, 1_000, 50,
+      { authorize: (input) => authorizeQueuedNotification(clientFor(async () => memberWithRoles([])), state.accounts, input) });
+    expect(state.db.raw.prepare("SELECT mention_type,status FROM notification_queue WHERE message_id=?").get(`fallback-before-${incoming}`)).toMatchObject({ mention_type: "everyone", status: "pending" });
+    const next = incoming === "direct"
+      ? { ...roleMessage(`incoming-${incoming}`), mentionedRoleIds: [], mentionedUserIds: ["sub"] }
+      : roleMessage(`incoming-${incoming}`);
+    await state.notifications.inspect(next, visible);
+    expect(state.db.raw.prepare("SELECT status,last_error FROM notification_queue WHERE message_id=?").get(`fallback-before-${incoming}`)).toMatchObject({ status: "failed", last_error: `evicted by ${incoming} mention priority` });
+    expect(state.db.raw.prepare("SELECT status,mention_type FROM notification_queue WHERE message_id=?").get(`incoming-${incoming}`)).toMatchObject({ status: "pending", mention_type: incoming });
   });
 });
 
@@ -343,7 +358,7 @@ describe("fresh authorization on each DM retry", () => {
     const authorization = { authorize: (input: Parameters<typeof authorizeQueuedNotification>[2]) => authorizeQueuedNotification(fresh.client, state.accounts, input) };
     await state.notifications.drain({ send: async (_id, content) => { sent.push(content); hasRole = false; throw { status: 503 }; } }, 1_000, 50, authorization);
     expect(sent).toHaveLength(1);
-    expect(state.db.raw.prepare("SELECT status,available_at FROM notification_queue WHERE message_id='retry-role-everyone'").get()).toMatchObject({ status: "pending", available_at: 61_000 });
+    expect(state.db.raw.prepare("SELECT status,available_at,kind,mention_type,target_kinds FROM notification_queue WHERE message_id='retry-role-everyone'").get()).toMatchObject({ status: "pending", available_at: 61_000, kind: "everyone", mention_type: "everyone", target_kinds: '["role_or_everyone"]' });
     const delivered: string[] = [];
     await state.notifications.drain({ send: async (_id, content) => { delivered.push(content); } }, 61_000, 50, authorization);
     expect(delivered).toHaveLength(1); expect(delivered[0]).toContain("全体メンション");

@@ -67,6 +67,8 @@ Alt Notifyは、複数のDiscordアカウントを使う人向けの公開β版�
 npm ci
 Copy-Item .env.example .env
 # .env にBot Token、Application IDなどを設定
+# 初回だけローカル用DBを作成（本番起動は既存DB必須）
+node --import tsx --input-type=module -e "import 'dotenv/config'; const { SqliteDatabase } = await import('./src/db.ts'); const { loadConfig } = await import('./src/config.ts'); const db = await SqliteDatabase.open(loadConfig().DATABASE_PATH); db.close()"
 npm run deploy:commands
 npm run dev
 ```

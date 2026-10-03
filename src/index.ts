@@ -34,7 +34,7 @@ import { UserFacingError, userMessageForError } from "./services/user-error.js";
 
 const config = loadConfig();
 const logger = new Logger(config.LOG_LEVEL);
-const db = await SqliteDatabase.open(config.DATABASE_PATH);
+const db = await SqliteDatabase.open(config.DATABASE_PATH, { requireExisting: true });
 db.cleanup();
 const accounts = new AccountService(db, config.DEVELOPER_TEST_DISCORD_ID, config.LINK_CODE_PEPPER, config.FREE_LINK_LIMIT);
 const watches = new WatchService(db, accounts);

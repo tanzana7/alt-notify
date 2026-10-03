@@ -257,7 +257,10 @@ export class NotificationService {
           deliveryKind = verifiedKinds.reduce((best, kind) => mentionPriority(kind) < mentionPriority(best) ? kind : best, "everyone" as MentionKind);
         }
         if (deliveryKind === "everyone" && now < Number(row.created_at) + 60_000) {
-          this.db.raw.prepare("UPDATE notification_queue SET status='pending', available_at=?, attempts=attempts-1 WHERE id=? AND status='processing'").run(Number(row.created_at) + 60_000, row.id);
+          // The row is now an everyone notification for queue priority and
+          // capacity eviction, even though target_kinds retains the role
+          // candidate for a fresh authorization at delivery time.
+          this.db.raw.prepare("UPDATE notification_queue SET kind='everyone', mention_type='everyone', status='pending', available_at=?, attempts=attempts-1 WHERE id=? AND status='processing'").run(Number(row.created_at) + 60_000, row.id);
           continue;
         }
       }
@@ -305,7 +308,7 @@ export class NotificationService {
             const labelsJson = JSON.stringify(labels);
             const kindsJson = JSON.stringify(targets.every((target) => target.kind !== undefined) ? targets.map((target) => target.kind) : []);
             if (targetDeliveryKind === "everyone" && now < Number(row.created_at) + 60_000) {
-              this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=?, target_kinds=?, status='pending', available_at=?, attempts=attempts-1 WHERE id=? AND status='processing'")
+              this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=?, target_kinds=?, kind='everyone', mention_type='everyone', status='pending', available_at=?, attempts=attempts-1 WHERE id=? AND status='processing'")
                 .run(targetIdsJson, labelsJson, kindsJson, Number(row.created_at) + 60_000, row.id);
               return undefined;
             }
@@ -321,7 +324,7 @@ export class NotificationService {
         });
         if (!delivered) continue;
         const sentAt = Math.max(now, this.now());
-        this.db.raw.prepare("UPDATE notification_queue SET status='sent', mention_type=?, sent_at=? WHERE id=? AND status='processing'").run(deliveryKind, sentAt, row.id);
+        this.db.raw.prepare("UPDATE notification_queue SET status='sent', kind=?, mention_type=?, sent_at=? WHERE id=? AND status='processing'").run(deliveryKind === "everyone" ? "everyone" : "direct", deliveryKind, sentAt, row.id);
         this.lastSentAt.set(String(row.main_user_id), sentAt);
         sent++;
       } catch (error) {
