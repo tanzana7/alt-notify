@@ -10,6 +10,7 @@ import {
   MessageFlags,
   Partials,
   PermissionFlagsBits,
+  Status,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type GuildMember,
@@ -204,8 +205,17 @@ client.once(Events.ClientReady, (ready) => {
   logger.info("gateway ready", { guilds: ready.guilds.cache.size });
   void healthchecks.check(true);
 });
-client.on(Events.ShardDisconnect, (event) => logger.warn("gateway disconnected", { code: event.code }));
-client.on(Events.ShardReconnecting, () => logger.warn("gateway reconnecting"));
+function logGatewayConnected(shardId: number): void {
+  // A single shard recovering is not enough to validate the whole Gateway.
+  // ClientReady covers first login; these events cover re-identify and resume.
+  if (client.isReady() && client.ws.shards.size > 0 && client.ws.shards.every((shard) => shard.status === Status.Ready)) {
+    logger.info("gateway connected", { shardId });
+  }
+}
+client.on(Events.ShardReady, logGatewayConnected);
+client.on(Events.ShardResume, logGatewayConnected);
+client.on(Events.ShardDisconnect, (event, shardId) => logger.warn("gateway disconnected", { code: event.code, shardId }));
+client.on(Events.ShardReconnecting, (shardId) => logger.warn("gateway reconnecting", { shardId }));
 client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isChatInputCommand()) await handleCommand(interaction);
   if (!interaction.isButton()) return;

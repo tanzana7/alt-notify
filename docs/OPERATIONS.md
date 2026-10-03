@@ -62,7 +62,7 @@ DBが欠落・空・破損した場合は、まずサービスを停止して原
 3. Windows版Botが停止していることを確認。
 4. `/opt/altnoti`へソース、`dist`、`package-lock.json`を転送。`.env`とDBは上書きしない。
 5. Oracleで`npm ci --omit=dev`、systemd reload、`systemctl restart alt-notify.service`。
-6. `status`、Gateway ready、DB整合性、既存連携、pendingキューを確認。
+6. `status`、現在Invocationの最新Gateway状態、DB整合性、既存連携、pendingキューを確認。
 
 環境変数の変更時は `/etc/altnoti.env`を直接ログ出力せず、必要なキー名だけをレビューする。公開βの通常Free上限は`FREE_LINK_LIMIT=1`です。開発者・テスト用権限とPro枠はアプリ側で5件を維持します。既存の超過連携は削除せず、新規連携だけを拒否します。
 
@@ -74,7 +74,9 @@ Discord Developer PortalでTokenを再発行した後、Token自体をチャッ�
 .\deploy\rotate-token.ps1
 ```
 
-入力は非表示。スクリプトはOracleでバックアップ、環境ファイルの原子更新、systemd再起動を行い、現在の`InvocationID`のログでGateway readyを確認する。失敗時は更新前の環境ファイルへ戻してサービスを再起動する。古い起動のreadyログや時刻検索は成功判定に使わない。
+入力は非表示。スクリプトはOracleでバックアップ、環境ファイルの原子更新、systemd再起動を行い、現在の`InvocationID`の最後のGateway状態がready/connectedであることを確認する。disconnected/reconnectingが最後なら、過去のreadyを成功判定に使わない。失敗時は更新前の環境ファイルへ戻してサービスを再起動する。
+
+更新前の環境ファイルは、サービス停止前にroot専用の`/var/backups/altnoti-config-recovery/altnoti.env`へ保存・照合・同期する。ディレクトリは`root:root 700`、ファイルは`root:root 600`。正常更新か検証済みrollbackの後だけ消去する。rollback失敗・強制終了後は残るため、次のToken/Healthchecks設定変更は拒否される。運営者は原因と現在のサービス状態を調査し、復旧コピーを安全な場所へ退避してから手動復旧する。内容や秘密値をログ・チャットへ貼らない。`/var/lib/altnoti`はBotユーザーが書き込めるため復旧コピーに使わない。
 
 既定でWindowsのDesktopからSSH鍵を探し、次にDownloadsを確認する。特殊な配置では`-KeyPath "..."`で上書きする。失敗時は旧env復元だけでなくrollback後のGateway readyを確認する。Portalで旧TokenをReset済みなら旧envへ戻しても復旧しない場合があり、`manual intervention required`を見落とさない。
 
@@ -87,7 +89,9 @@ Discord Developer PortalでTokenを再発行した後、Token自体をチャッ�
 .\deploy\configure-healthcheck.ps1
 ```
 
-SSH鍵の探索順と`-KeyPath "..."`による上書きはToken更新と同じ。設定成功には現在の起動のGateway readyと、新しい秘密URLへのHTTP 2xx heartbeatの両方を要する。外部probe失敗時は旧envへ戻し、旧設定でのサービス起動とGateway readyを確認する。URLはコマンドラインやログへ出さない。
+SSH鍵の探索順と`-KeyPath "..."`による上書きはToken更新と同じ。設定成功には現在の起動の最新Gateway状態がready/connectedであることと、新しい秘密URLへのHTTPS GET 2xx heartbeatの両方を要する。probeは`/usr/local/lib/altnoti/probe-heartbeat.mjs`（root管理、Node.js 24以上）で実行し、5秒でタイムアウトする。スクリプトと同時にこのファイルを配置する。外部probe失敗時は旧envへ戻し、旧設定でのサービス起動と最新Gateway状態を確認する。URLはコマンドラインやログへ出さない。
+
+配置時はリポジトリの`deploy/probe-heartbeat.mjs`をOracleの一時ステージへ転送し、`sudo install -d -o root -g root -m 755 /usr/local/lib/altnoti`、`sudo install -o root -g root -m 644 <stage>/probe-heartbeat.mjs /usr/local/lib/altnoti/probe-heartbeat.mjs`を実行する。両設定スクリプトは`/usr/local/sbin/`へ`root:root 755`で配置する。設定実行前に`stat`とローカル/OracleのSHA-256一致で3ファイルを確認する。設定スクリプトは秘密入力を受け取るため、配置確認のために本番値で実行しない。
 
 Gatewayがreadyで、pending/processingが200未満、直近15分のfailedが5未満の場合だけ成功heartbeatを送る。Gateway未接続時は送信せず、Healthchecks側の期限切れで検知する。閾値を超えた場合は`/fail`を送る。URL未設定時は外部通信しない。
 

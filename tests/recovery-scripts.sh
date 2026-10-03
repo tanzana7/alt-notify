@@ -13,7 +13,7 @@ for script_name in altnoti-rotate-token.sh altnoti-configure-healthcheck.sh; do
 done
 
 for script_name in altnoti-rotate-token.sh altnoti-configure-healthcheck.sh; do
-  for scenario in start_fail ready_timeout start_limit reset_fail stop_fail backup_fail rollback_fail success inactive old_ready switch_no_ready switch_then_ready journal_fail heartbeat_fail; do
+  for scenario in start_fail ready_timeout start_limit reset_fail stop_fail backup_fail rollback_fail success inactive old_ready switch_no_ready switch_then_ready journal_fail heartbeat_fail ready_then_disconnect ready_then_reconnect disconnect_then_connected reconnect_then_connected blocked_copy; do
     [[ "$script_name" == altnoti-configure-healthcheck.sh || "$scenario" != heartbeat_fail ]] || continue
     case_dir=$(mktemp -d "$scratch/case.XXXXXX")
     mkdir "$case_dir/bin"
@@ -31,10 +31,16 @@ for script_name in altnoti-rotate-token.sh altnoti-configure-healthcheck.sh; do
     # Only the test copy receives fixture paths and a short readiness deadline.
     sed -e "s@/etc/altnoti.env@$case_dir/env@g" \
       -e "s@/run/altnoti-@$case_dir/altnoti-@g" \
+      -e "s@/var/backups/altnoti-config-recovery@$case_dir/config-recovery@g" \
       -e 's@/usr/bin/node@node@g' \
+      -e 's@/usr/local/lib/altnoti/probe-heartbeat.mjs@probe-heartbeat.mjs@g' \
       -e 's@seq 1 60@seq 1 2@g' \
       -e 's@sleep 1@sleep 0@g' \
       "$repo_root/deploy/$script_name" > "$case_dir/script.sh"
+    if [[ "$scenario" == blocked_copy ]]; then
+      mkdir "$case_dir/config-recovery"
+      cp "$case_dir/original" "$case_dir/config-recovery/altnoti.env"
+    fi
 
     cat > "$case_dir/bin/systemctl" <<'MOCK'
 #!/usr/bin/env bash
@@ -93,6 +99,14 @@ elif [[ "$TEST_SCENARIO" == old_ready || "$TEST_SCENARIO" == ready_timeout || "$
   :
 elif [[ "$TEST_SCENARIO" == switch_no_ready && "$id" == invocation-2 ]]; then
   :
+elif [[ "$id" == invocation-1 && "$TEST_SCENARIO" == ready_then_disconnect ]]; then
+  printf '%s\n' '{"message":"gateway ready"}' '{"message":"gateway disconnected"}'
+elif [[ "$id" == invocation-1 && "$TEST_SCENARIO" == ready_then_reconnect ]]; then
+  printf '%s\n' '{"message":"gateway ready"}' '{"message":"gateway reconnecting"}'
+elif [[ "$id" == invocation-1 && "$TEST_SCENARIO" == disconnect_then_connected ]]; then
+  printf '%s\n' '{"message":"gateway ready"}' '{"message":"gateway disconnected"}' '{"message":"gateway connected"}'
+elif [[ "$id" == invocation-1 && "$TEST_SCENARIO" == reconnect_then_connected ]]; then
+  printf '%s\n' '{"message":"gateway ready"}' '{"message":"gateway disconnected"}' '{"message":"gateway reconnecting"}' '{"message":"gateway connected"}'
 else
   printf '%s\n' '{"message":"gateway ready"}'
 fi
@@ -100,17 +114,32 @@ MOCK
     cat > "$case_dir/bin/node" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $# -eq 3 && "$1" == --input-type=module && "$2" == - && "$3" == "$TEST_STATE_DIR"/altnoti-healthcheck-url.* ]] || exit 2
-printf 'probe %s\n' "$3" >> "$TEST_STATE_DIR/log"
+[[ $# -eq 2 && "$1" == probe-heartbeat.mjs && "$2" == "$TEST_STATE_DIR"/altnoti-healthcheck-url.* ]] || exit 2
+printf 'probe %s\n' "$2" >> "$TEST_STATE_DIR/log"
 [[ "$TEST_SCENARIO" != heartbeat_fail ]]
 MOCK
     cat > "$case_dir/bin/chown" <<'MOCK'
 #!/usr/bin/env bash
-printf 'chown %s\n' "$1" >> "$TEST_STATE_DIR/log"
+printf 'chown %s %s\n' "$1" "$2" >> "$TEST_STATE_DIR/log"
+MOCK
+    cat > "$case_dir/bin/chmod" <<'MOCK'
+#!/usr/bin/env bash
+printf 'chmod %s %s\n' "$1" "$2" >> "$TEST_STATE_DIR/log"
+MOCK
+    cat > "$case_dir/bin/sync" <<'MOCK'
+#!/usr/bin/env bash
+printf 'sync %s\n' "$*" >> "$TEST_STATE_DIR/log"
 MOCK
     cat > "$case_dir/bin/stat" <<'MOCK'
 #!/usr/bin/env bash
-if [[ "$1" == -c ]]; then printf '%s\n' 'root:altnoti 640'; else /usr/bin/stat "$@"; fi
+if [[ "$1" == -c ]]; then
+  case "$3" in
+    "$TEST_STATE_DIR/config-recovery") printf '%s\n' 'root:root 700' ;;
+    "$TEST_STATE_DIR/config-recovery/altnoti.env") printf '%s\n' 'root:root 600' ;;
+    "$TEST_STATE_DIR/env") printf '%s\n' 'root:altnoti 640' ;;
+    *) exit 2 ;;
+  esac
+else /usr/bin/stat "$@"; fi
 MOCK
     chmod +x "$case_dir/bin/"*
 
@@ -126,8 +155,9 @@ MOCK
       result=$?
     fi
     if grep -Fq "$secret" "$case_dir/out" || grep -Fq "$secret" "$case_dir/err" || grep -Fq "$secret" "$case_dir/log"; then fail "$script_name/$scenario exposed secret"; fi
+    if grep -Fq 'old-fixture' "$case_dir/out" || grep -Fq 'old-fixture' "$case_dir/err"; then fail "$script_name/$scenario exposed previous secret"; fi
 
-    if [[ "$scenario" == success || "$scenario" == switch_then_ready ]]; then
+    if [[ "$scenario" == success || "$scenario" == switch_then_ready || "$scenario" == disconnect_then_connected || "$scenario" == reconnect_then_connected ]]; then
       [[ "$result" -eq 0 ]] || fail "$script_name/$scenario failed"
       cmp -s "$case_dir/env" "$case_dir/original" && fail "$script_name/$scenario did not update env"
       [[ $(cat "$case_dir/start_count") -eq 1 ]] || fail "$script_name/$scenario unexpected rollback"
@@ -137,9 +167,9 @@ MOCK
     else
       [[ "$result" -ne 0 ]] || fail "$script_name/$scenario unexpectedly succeeded"
       cmp -s "$case_dir/env" "$case_dir/original" || fail "$script_name/$scenario did not preserve old env"
-      if [[ "$scenario" == inactive || "$scenario" == backup_fail ]]; then
+      if [[ "$scenario" == inactive || "$scenario" == backup_fail || "$scenario" == blocked_copy ]]; then
         [[ $(cat "$case_dir/start_count") -eq 0 ]] || fail "$script_name/$scenario started service"
-        if [[ "$scenario" == inactive ]]; then
+        if [[ "$scenario" == inactive || "$scenario" == blocked_copy ]]; then
           ! grep -Fq 'start altnoti-backup.service' "$case_dir/log" || fail "$script_name/$scenario ran backup"
         fi
       elif [[ "$scenario" == rollback_fail ]]; then
@@ -159,6 +189,24 @@ MOCK
           [[ $(cat "$case_dir/reset_count") -eq 2 ]] || fail "$script_name/$scenario missed reset-failed"
         fi
       fi
+    fi
+    if [[ "$scenario" == blocked_copy ]]; then
+      grep -Fq 'unresolved configuration recovery copy' "$case_dir/err" || fail "$script_name/$scenario missed recovery warning"
+      cmp -s "$case_dir/config-recovery/altnoti.env" "$case_dir/original" || fail "$script_name/$scenario changed recovery copy"
+    elif [[ "$scenario" == rollback_fail ]]; then
+      [[ -f "$case_dir/config-recovery/altnoti.env" ]] || fail "$script_name/$scenario lost durable recovery copy"
+      cmp -s "$case_dir/config-recovery/altnoti.env" "$case_dir/original" || fail "$script_name/$scenario corrupted recovery copy"
+    else
+      [[ ! -e "$case_dir/config-recovery" ]] || fail "$script_name/$scenario leaked recovery copy"
+    fi
+    if [[ "$scenario" != inactive && "$scenario" != blocked_copy ]]; then
+      grep -Fq "chown root:root $case_dir/config-recovery" "$case_dir/log" || fail "$script_name/$scenario missed recovery directory owner"
+      grep -Fq "chmod 700 $case_dir/config-recovery" "$case_dir/log" || fail "$script_name/$scenario missed recovery directory mode"
+      grep -Fq "chown root:root $case_dir/config-recovery/altnoti.env" "$case_dir/log" || fail "$script_name/$scenario missed recovery file owner"
+      grep -Fq "chmod 600 $case_dir/config-recovery/altnoti.env" "$case_dir/log" || fail "$script_name/$scenario missed recovery file mode"
+    fi
+    if compgen -G "$case_dir/altnoti-*" >/dev/null || compgen -G "$case_dir/env.next.*" >/dev/null || compgen -G "$case_dir/env.restore.*" >/dev/null; then
+      fail "$script_name/$scenario leaked a temporary file"
     fi
     if [[ "$scenario" == old_ready ]]; then
       grep -Fq 'journal invocation-1' "$case_dir/log" || fail "$script_name/$scenario did not inspect current invocation"

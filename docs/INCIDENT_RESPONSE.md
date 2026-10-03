@@ -20,14 +20,14 @@ sudo systemctl reset-failed alt-notify.service
 sudo systemctl start alt-notify.service
 systemctl is-active alt-notify.service
 invocation_id=$(systemctl show alt-notify.service --property=InvocationID --value)
-test -n "$invocation_id" && sudo journalctl "_SYSTEMD_INVOCATION_ID=$invocation_id" --output=cat --no-pager | grep '"message":"gateway ready"'
+test -n "$invocation_id" && sudo journalctl "_SYSTEMD_INVOCATION_ID=$invocation_id" --output=cat --no-pager | grep -E '"message":"gateway (ready|connected|disconnected|reconnecting)"' | tail -1
 ```
 
-Gateway readyを現在のsystemd起動IDと照合し、再起動していないことを再確認してから、DBのmain/linkとpending/processing/failed件数を確認する。起動時に処理中キューはpendingへ戻るため、サービスが安定した後に重複送信の有無も確認する。
+最後のGateway状態がready/connectedか現在のsystemd起動IDと照合し、再起動していないことを再確認してから、DBのmain/linkとpending/processing/failed件数を確認する。disconnected/reconnectingが最後なら未復旧と扱う。起動時に処理中キューはpendingへ戻るため、サービスが安定した後に重複送信の有無も確認する。
 
 ## Gateway切断・通知が届かない
 
-1. `journalctl`で`gateway disconnected`、`gateway reconnecting`、`gateway ready`を時系列で確認する。
+1. `journalctl`で`gateway disconnected`、`gateway reconnecting`、`gateway connected`、`gateway ready`を時系列で確認する。
 2. Oracleから外向きHTTPS疎通とDNSを確認する。
 3. Discord Developer PortalでBotのトークン状態とIntent設定を確認する。
 4. `/admin-stats`でGateway、pending、failedを確認する。
@@ -49,7 +49,9 @@ Gateway切断中に発生したDiscordイベントは回収できない場合が
 
 これはP0として扱う。Discord Developer PortalでBot TokenをResetし、旧トークンを無効化する。新トークンを`/etc/altnoti.env`へ安全に反映し、権限を`root:altnoti 640`へ戻してsystemdを再起動する。Git、ログ、バックアップ、チャットにトークンが残っていないか確認し、外部へ流出した可能性があれば関係者へ通知する。値そのものを確認表示しない。
 
-更新は`deploy/rotate-token.ps1`を使う。Tokenを引数、環境変数、チャットに置かない。設定更新失敗時は旧環境の復元だけでなく、サービス再起動とGateway readyまで検証する。旧TokenがReset済みなら復元後も接続できない可能性があるため、`rollback failed; manual intervention required`を復旧済みと扱わない。
+更新は`deploy/rotate-token.ps1`を使う。Tokenを引数、環境変数、チャットに置かない。設定更新失敗時は旧環境の復元だけでなく、サービス再起動と最新Gateway状態まで検証する。旧TokenがReset済みなら復元後も接続できない可能性があるため、`rollback failed; manual intervention required`を復旧済みと扱わない。未解決の場合はroot専用の`/var/backups/altnoti-config-recovery/altnoti.env`を保全し、次の設定変更を行わず手動復旧する。
+
+手動復旧では、まずサービスを停止し、復旧コピーが通常ファイル・非空・`root:root 600`、親ディレクトリが`root:root 700`であることを確認する。旧Tokenがまだ有効か確認したうえで、コピーを`/etc`内の新規一時ファイルへ複製し、`root:altnoti 640`にしてから原子的に`/etc/altnoti.env`へ移す。`reset-failed`後にサービスを起動し、現在Invocationの最新Gateway状態とDB件数を確認する。復旧完了を確認するまで原本を消さず、完了後にのみroot権限で復旧コピーと空ディレクトリを削除する。内容や秘密値を端末・ログへ表示しない。
 
 ## 外部heartbeat停止
 
