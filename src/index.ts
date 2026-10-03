@@ -10,7 +10,6 @@ import {
   MessageFlags,
   Partials,
   PermissionFlagsBits,
-  Status,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type GuildMember,
@@ -27,6 +26,7 @@ import { ApprovalStore } from "./services/approval.js";
 import { canUseAdminStats } from "./services/permissions.js";
 import { MemberCache } from "./services/member-cache.js";
 import { HealthcheckService } from "./services/healthcheck.js";
+import { isGatewayReady } from "./services/gateway-state.js";
 import { helpText } from "./help.js";
 import { classifyDiscordError } from "./services/discord-errors.js";
 import { authorizeQueuedNotification } from "./services/authorization.js";
@@ -193,7 +193,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
     }
     if (interaction.commandName === "admin-stats") {
       if (!canUseAdminStats(interaction.user.id, config.OWNER_DISCORD_ID)) { await privateReply(interaction, "権限がありません"); return; }
-      const stats = getStats(db, client.ws.status === 0, client.guilds.cache.size);
+      const stats = getStats(db, isGatewayReady(client), client.guilds.cache.size);
       await privateReply(interaction, `導入サーバー数：${stats.guilds}\nメイン登録数：${stats.mainAccounts}\n連携済みアカウント数：${stats.linkedAccounts}\n本日の通知送信数：${stats.notificationsSentToday}\n送信失敗数：${stats.notificationFailures}\n送信待ち：${stats.pendingQueue}\nGateway：${stats.gatewayReady ? "接続" : "未接続"}`);
     }
   } catch (error) {
@@ -202,13 +202,14 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
 }
 
 client.once(Events.ClientReady, (ready) => {
-  logger.info("gateway ready", { guilds: ready.guilds.cache.size });
-  void healthchecks.check(true);
+  const gatewayReady = isGatewayReady(client);
+  logger.info("gateway ready", { guilds: ready.guilds.cache.size, shardCount: client.ws.shards.size, allShardsReady: gatewayReady });
+  void healthchecks.check(gatewayReady);
 });
 function logGatewayConnected(shardId: number): void {
   // A single shard recovering is not enough to validate the whole Gateway.
   // ClientReady covers first login; these events cover re-identify and resume.
-  if (client.isReady() && client.ws.shards.size > 0 && client.ws.shards.every((shard) => shard.status === Status.Ready)) {
+  if (isGatewayReady(client)) {
     logger.info("gateway connected", { shardId });
   }
 }
@@ -265,7 +266,7 @@ memoryCleanupTimer.unref();
 const cleanupTimer = setInterval(() => {
   try { db.cleanup(Date.now(), false); } catch (error) { logger.error("database cleanup failed", { error: error instanceof Error ? error.message : "unknown" }); }
 }, 60 * 60 * 1_000);
-const healthcheckTimer = config.HEALTHCHECKS_HEARTBEAT_URL ? setInterval(() => { void healthchecks.check(client.ws.status === 0); }, config.HEALTHCHECKS_HEARTBEAT_INTERVAL_MS) : undefined;
+const healthcheckTimer = config.HEALTHCHECKS_HEARTBEAT_URL ? setInterval(() => { void healthchecks.check(isGatewayReady(client)); }, config.HEALTHCHECKS_HEARTBEAT_INTERVAL_MS) : undefined;
 
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {

@@ -89,11 +89,11 @@ Discord Developer PortalでTokenを再発行した後、Token自体をチャッ�
 .\deploy\configure-healthcheck.ps1
 ```
 
-SSH鍵の探索順と`-KeyPath "..."`による上書きはToken更新と同じ。設定成功には現在の起動の最新Gateway状態がready/connectedであることと、新しい秘密URLへのHTTPS GET 2xx heartbeatの両方を要する。probeは`/usr/local/lib/altnoti/probe-heartbeat.mjs`（root管理、Node.js 24以上）で実行し、5秒でタイムアウトする。スクリプトと同時にこのファイルを配置する。外部probe失敗時は旧envへ戻し、旧設定でのサービス起動と最新Gateway状態を確認する。URLはコマンドラインやログへ出さない。
+SSH鍵の探索順と`-KeyPath "..."`による上書きはToken更新と同じ。設定成功には現在の起動の最新Gateway状態がready/connectedであることと、新しい秘密URLへのHTTPS GET 2xx heartbeatの両方を要する。probeは`/usr/local/lib/altnoti/probe-heartbeat.mjs`（root管理、Node.js 24以上）で実行し、5秒でタイムアウトする。リダイレクトは追跡せず、3xxは失敗とする。スクリプトと同時にこのファイルを配置する。外部probe失敗時は旧envへ戻し、旧設定でのサービス起動と最新Gateway状態を確認する。URLはコマンドラインやログへ出さない。
 
 配置時はリポジトリの`deploy/probe-heartbeat.mjs`をOracleの一時ステージへ転送し、`sudo install -d -o root -g root -m 755 /usr/local/lib/altnoti`、`sudo install -o root -g root -m 644 <stage>/probe-heartbeat.mjs /usr/local/lib/altnoti/probe-heartbeat.mjs`を実行する。両設定スクリプトは`/usr/local/sbin/`へ`root:root 755`で配置する。設定実行前に`stat`とローカル/OracleのSHA-256一致で3ファイルを確認する。設定スクリプトは秘密入力を受け取るため、配置確認のために本番値で実行しない。
 
-Gatewayがreadyで、pending/processingが200未満、直近15分のfailedが5未満の場合だけ成功heartbeatを送る。Gateway未接続時は送信せず、Healthchecks側の期限切れで検知する。閾値を超えた場合は`/fail`を送る。URL未設定時は外部通信しない。
+現在の全ShardがReadyで、pending/processingが200未満、直近15分のfailedが5未満の場合だけ成功heartbeatを送る。1つでもShardが再接続中なら送信せず、Healthchecks側の期限切れで検知する。閾値を超えた場合は`/fail`を送る。URL未設定時は外部通信しない。
 
 ## Discord実機確認
 

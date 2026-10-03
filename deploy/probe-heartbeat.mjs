@@ -8,7 +8,9 @@ export async function probeHeartbeat(url, { timeoutMs = 5_000, allowHttp = false
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' && !(allowHttp && parsed.protocol === 'http:' && ['127.0.0.1', '::1', 'localhost'].includes(parsed.hostname))) return false;
-    const response = await fetch(parsed, { method: 'GET', signal: AbortSignal.timeout(timeoutMs) });
+    // A redirect must not turn a trusted HTTPS endpoint into another target,
+    // particularly a plaintext HTTP request. Only this endpoint's 2xx counts.
+    const response = await fetch(parsed, { method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
     return response.ok;
   } catch {
     // Never expose URL, response body, or transport errors; the URL is a secret.
