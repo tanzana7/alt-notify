@@ -18,6 +18,8 @@ BotはNode.js＋systemdで動作させる。1GB VMではDocker常駐のオーバ
 
 継続的な起動失敗は`StartLimitIntervalSec=60s`・`StartLimitBurst=5`と5秒間隔の再試行後に、安定した`failed`へ移行する。再試行中は`systemctl is-failed alt-notify.service`がまだ`failed`を返さない場合がある。最終状態と`journalctl -u alt-notify.service`を併せて確認する。このVMでは起動制限到達後も`Result=exit-code`となり、journalに`Start request repeated too quickly`が記録された。本番DBを使った故障注入は行わず、レート制限の検証には`deploy/alt-notify-startup-failure-test.service`を一時unitとして使う。
 
+起動制限到達後は[インシデント対応](INCIDENT_RESPONSE.md)に従う。原因修正とDB・設定・権限の検証後に限り`sudo systemctl reset-failed alt-notify.service`、`sudo systemctl start alt-notify.service`の順で実行し、active、今回のGateway ready、main/link/queueを確認する。
+
 ## 状態確認
 
 ```bash
@@ -45,10 +47,11 @@ sudo sha256sum /var/lib/altnoti/backups/discord-alt-notify-*.sqlite
 sudo systemctl stop alt-notify.service
 cd /opt/altnoti
 sudo -u altnoti /usr/bin/node --input-type=module -e 'import initSqlJs from "sql.js"; import fs from "node:fs/promises"; const SQL=await initSqlJs({locateFile:f=>`/opt/altnoti/node_modules/sql.js/dist/${f}`}); const db=new SQL.Database(new Uint8Array(await fs.readFile("/var/lib/altnoti/discord-alt-notify.sqlite"))); console.log(db.exec("PRAGMA integrity_check")[0].values[0][0]); db.close()'
-sudo systemctl start alt-notify.service
 ```
 
-復元は、サービス停止、対象DBを別名へ退避、検証済みバックアップを所定パスへ配置、所有者・権限確認、サービス起動、Gatewayと連携情報確認の順で行う。削除や初期化はしない。オフホストバックアップは別途暗号化保存先を承認してから追加する。
+`ok`を確認し、DBの存在・非空・所有者・権限と停止原因を検証した後に限り、`sudo systemctl reset-failed alt-notify.service`、`sudo systemctl start alt-notify.service`を実行する。異常時は停止したまま調査する。
+
+復元は、サービス停止、対象DBを別名へ退避、検証済みバックアップを所定パスへ配置、存在・非空・整合性・所有者・権限確認、`reset-failed`、サービス起動、Gatewayと連携・queue確認の順で行う。削除や初期化はしない。オフホストバックアップは別途暗号化保存先を承認してから追加する。
 
 DBが欠落・空・破損した場合は、まずサービスを停止して原因と日次バックアップの整合性を調べる。**本番パスで新規DBを作らない。** 復元が必要なら上記の手順で検証済みバックアップから復元し、復元前後のmain/link件数とキュー状態を確認する。既存DBが見つかった場合も上書きせず、別名で保全してから判断する。
 
@@ -73,6 +76,8 @@ Discord Developer PortalでTokenを再発行した後、Token自体をチャッ�
 
 入力は非表示。スクリプトはOracleでバックアップ、環境ファイルの原子更新、systemd再起動、Gateway ready確認を行う。失敗時は更新前の環境ファイルへ戻してサービスを再起動する。
 
+既定でWindowsのDesktopからSSH鍵を探し、次にDownloadsを確認する。特殊な配置では`-KeyPath "..."`で上書きする。失敗時は旧env復元だけでなくrollback後のGateway readyを確認する。Portalで旧TokenをReset済みなら旧envへ戻しても復旧しない場合があり、`manual intervention required`を見落とさない。
+
 ## Healthchecks設定
 
 1. Healthchecks.ioでheartbeat checkを作成する。通知先、失敗猶予、通知頻度はHealthchecks側で設定する。
@@ -81,6 +86,8 @@ Discord Developer PortalでTokenを再発行した後、Token自体をチャッ�
 ```powershell
 .\deploy\configure-healthcheck.ps1
 ```
+
+SSH鍵の探索順と`-KeyPath "..."`による上書きはToken更新と同じ。設定失敗時は旧env復元後のサービス起動とGateway readyまで確認し、失敗なら手動対応する。
 
 Gatewayがreadyで、pending/processingが200未満、直近15分のfailedが5未満の場合だけ成功heartbeatを送る。Gateway未接続時は送信せず、Healthchecks側の期限切れで検知する。閾値を超えた場合は`/fail`を送る。URL未設定時は外部通信しない。
 

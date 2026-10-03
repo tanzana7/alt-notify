@@ -1,10 +1,14 @@
 param(
-  [string]$KeyPath = (Join-Path ([Environment]::GetFolderPath("UserProfile")) "Downloads\ssh-key-2026-09-21.key"),
+  [string]$KeyPath,
   [string]$RemoteHost = "151.145.66.148"
 )
 
 $ErrorActionPreference = "Stop"
-if (-not (Test-Path -LiteralPath $KeyPath)) { throw "SSH秘密鍵が見つかりません: $KeyPath" }
+if ($PSBoundParameters.ContainsKey("KeyPath")) {
+  $KeyPath = & "$PSScriptRoot/resolve-oracle-key.ps1" -KeyPath $KeyPath
+} else {
+  $KeyPath = & "$PSScriptRoot/resolve-oracle-key.ps1"
+}
 
 $secureUrl = Read-Host "Healthchecks.ioの秘密heartbeat URLを入力してください" -AsSecureString
 $urlPointer = [IntPtr]::Zero

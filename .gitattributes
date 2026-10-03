@@ -1,0 +1,3 @@
+deploy/altnoti-rotate-token.sh text eol=lf
+deploy/altnoti-configure-healthcheck.sh text eol=lf
+tests/recovery-scripts.sh text eol=lf

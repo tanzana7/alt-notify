@@ -9,10 +9,20 @@
 ```bash
 sudo systemctl status alt-notify.service --no-pager
 sudo journalctl -u alt-notify.service -n 200 --no-pager
-sudo systemctl restart alt-notify.service
 ```
 
-環境変数不足、Node実行時エラー、メモリ上限超過を順に確認する。起動時に処理中キューはpendingへ戻るため、サービスが安定した後にキュー件数と重複送信の有無を確認する。
+環境変数不足、Node実行時エラー、メモリ上限超過など原因を特定して修正する。DB関連ならDBの存在・非空・`integrity_check=ok`を確認し、必要な設定・所有者・権限も検証する。原因が残った状態で起動を繰り返したり、DBを自動復元したりしない。
+
+検証後、start-limit counterを解除して起動する。`reset-failed`は原因調査前に実行しない。
+
+```bash
+sudo systemctl reset-failed alt-notify.service
+sudo systemctl start alt-notify.service
+systemctl is-active alt-notify.service
+sudo journalctl -u alt-notify.service --no-pager | grep '"message":"gateway ready"' | tail -1
+```
+
+Gateway readyが今回の起動に対応することを時刻で確認し、DBのmain/linkとpending/processing/failed件数を確認する。起動時に処理中キューはpendingへ戻るため、サービスが安定した後に重複送信の有無も確認する。
 
 ## Gateway切断・通知が届かない
 
@@ -28,8 +38,9 @@ Gateway切断中に発生したDiscordイベントは回収できない場合が
 1. 直ちに`systemctl stop alt-notify.service`。
 2. 元DBを別名へ退避し、先にバックアップを取得する。
 3. `PRAGMA integrity_check`を停止中のコピーに対して実行する。
-4. 最新の整合性確認済みバックアップを復元し、所有者・権限を戻す。
-5. 起動後にGateway、連携、pendingキュー、通知テストを確認する。
+4. 最新の整合性確認済みバックアップを復元し、DBの存在・非空・整合性と所有者・権限を再確認する。
+5. `sudo systemctl reset-failed alt-notify.service`の後に`sudo systemctl start alt-notify.service`。
+6. active、今回の起動のGateway ready、main/link、pending/processing/failed、通知テストを確認する。
 
 復元判断がつかない場合はサービスを停止したままにし、DBを上書きしない。
 
@@ -37,7 +48,7 @@ Gateway切断中に発生したDiscordイベントは回収できない場合が
 
 これはP0として扱う。Discord Developer PortalでBot TokenをResetし、旧トークンを無効化する。新トークンを`/etc/altnoti.env`へ安全に反映し、権限を`root:altnoti 640`へ戻してsystemdを再起動する。Git、ログ、バックアップ、チャットにトークンが残っていないか確認し、外部へ流出した可能性があれば関係者へ通知する。値そのものを確認表示しない。
 
-更新は`deploy/rotate-token.ps1`を使う。Tokenを引数、環境変数、チャットに置かない。スクリプトは入力失敗時に旧環境を戻し、Gateway readyを確認できない場合もロールバックする。
+更新は`deploy/rotate-token.ps1`を使う。Tokenを引数、環境変数、チャットに置かない。設定更新失敗時は旧環境の復元だけでなく、サービス再起動とGateway readyまで検証する。旧TokenがReset済みなら復元後も接続できない可能性があるため、`rollback failed; manual intervention required`を復旧済みと扱わない。
 
 ## 外部heartbeat停止
 
