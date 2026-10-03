@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-beta.6 - 2026-10-03
+
+公開βの起動安全性と通知キュー優先順位を修正。
+
+- 本番DBが欠落・空・破損、またはAlt Notifyの基本テーブルを持たない場合、空DBを生成せず起動を中止
+- migrationとGatewayログインの前に、既存DBの整合性とschemaを検証
+- systemdの`ExecStartPre`でも本番DBが非空であることを確認
+- role→everyoneへのフォールバック時にキューの`kind`と`mention_type`をeveryoneへ更新
+- フォールバック済み通知の優先順位をキュー上限時の退避判定へ反映
+
 ## 0.1.0-beta.5 - 2026-10-03
 
 公開βのアカウント削除・通知再試行の信頼性修正。
