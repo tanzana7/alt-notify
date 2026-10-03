@@ -9,6 +9,7 @@ export function helpText(appName: string): string {
 4. 承認ボタンを押す
 
 /watch on は通常不要です。
+同じアカウントをメインとサブの両方には登録できません。
 
 β版では、通常Freeユーザーはサブアカウントを1つまで無料で連携できます。開発者・テスト用権限は5つまでです。
 

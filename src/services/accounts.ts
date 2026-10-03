@@ -3,7 +3,7 @@ import type { SqliteDatabase } from "../db.js";
 import { UserFacingError } from "./user-error.js";
 
 export type Plan = "free" | "pro" | "developer_test";
-export interface AccountStatus { kind: "main" | "sub" | "none"; mainUserId?: string; mainUsername?: string; plan?: Plan; linkLimit?: number; links: Array<{ userId: string; username: string; watchOffGuilds?: string[] }>; watches: string[]; watchOffGuilds: string[]; }
+export interface AccountStatus { kind: "main" | "sub" | "none"; mainUserId?: string; mainUsername?: string; alsoLinkedAsSub?: boolean; plan?: Plan; linkLimit?: number; links: Array<{ userId: string; username: string; watchOffGuilds?: string[] }>; watches: string[]; watchOffGuilds: string[]; }
 
 export class AccountService {
   private readonly failedCodeAttempts = new Map<string, { since: number; count: number }>();
@@ -11,8 +11,12 @@ export class AccountService {
   public constructor(private readonly db: SqliteDatabase, private readonly developerTestId?: string, private readonly pepper = "", private readonly freeLinkLimit = 1) {}
 
   public registerMain(userId: string, username: string, testDm: () => Promise<void>, now = Date.now()): Promise<void> {
+    if (this.db.raw.prepare("SELECT 1 FROM account_links WHERE sub_user_id=?").get(userId)) throw new UserFacingError("このアカウントはすでにサブアカウントとして連携されています");
     return testDm().then(() => {
       const tx = this.db.raw.transaction(() => {
+        // The DM check above awaits Discord; a sub link may have been approved
+        // while it was in flight. Keep the role boundary atomic with the write.
+        if (this.db.raw.prepare("SELECT 1 FROM account_links WHERE sub_user_id=?").get(userId)) throw new UserFacingError("このアカウントはすでにサブアカウントとして連携されています");
         this.db.raw.prepare("INSERT INTO main_accounts(user_id, username, created_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username").run(userId, username, now);
         const plan: Plan = userId === this.developerTestId ? "developer_test" : "free";
         this.db.raw.prepare("INSERT INTO entitlements(user_id, plan, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET plan=excluded.plan, updated_at=excluded.updated_at").run(userId, plan, now);
@@ -58,6 +62,7 @@ export class AccountService {
 
   public approveLinkByHash(subUserId: string, codeHash: string, username: string, now = Date.now()): { mainUserId: string; mainUsername: string } {
     const tx = this.db.raw.transaction(() => {
+      if (this.db.raw.prepare("SELECT 1 FROM main_accounts WHERE user_id=?").get(subUserId)) throw new UserFacingError("メインアカウントとして登録済みのアカウントはサブとして連携できません");
       const row = this.getCodeRow(codeHash);
       this.validateCode(row, subUserId, now);
       const count = (this.db.raw.prepare("SELECT COUNT(*) AS count FROM account_links WHERE main_user_id=?").get(row.mainUserId) as { count: number }).count;
@@ -101,33 +106,19 @@ export class AccountService {
 
   public deleteAccount(userId: string): "main" | "sub" | "none" {
     const main = this.db.raw.prepare("SELECT user_id AS userId FROM main_accounts WHERE user_id=?").get(userId) as { userId: string } | undefined;
-    if (main) {
-      const tx = this.db.raw.transaction(() => {
-        // main_accounts cascades links, watches, link codes, and queued rows;
-        // dedup has no foreign key, so remove it explicitly as personal data.
-        this.db.raw.prepare("DELETE FROM notification_queue WHERE main_user_id=?").run(userId);
-        this.db.raw.prepare("DELETE FROM notification_dedup WHERE main_user_id=?").run(userId);
-        this.db.raw.prepare("DELETE FROM entitlements WHERE user_id=?").run(userId);
-        // Keep deletion correct even when a legacy database was created before
-        // foreign-key enforcement was enabled.
-        this.db.raw.prepare("DELETE FROM guild_watches WHERE sub_user_id IN (SELECT sub_user_id FROM account_links WHERE main_user_id=?)").run(userId);
-        this.db.raw.prepare("DELETE FROM account_links WHERE main_user_id=?").run(userId);
-        this.db.raw.prepare("DELETE FROM link_codes WHERE main_user_id=?").run(userId);
-        this.db.raw.prepare("DELETE FROM main_accounts WHERE user_id=?").run(userId);
-      });
-      tx();
-      return "main";
-    }
     const sub = this.db.raw.prepare("SELECT sub_user_id AS subUserId FROM account_links WHERE sub_user_id=?").get(userId) as { subUserId: string } | undefined;
-    const queued = this.db.raw.prepare("SELECT id, target_user_ids, target_labels, target_kinds FROM notification_queue").all() as Array<{ id: number; target_user_ids: string; target_labels: string; target_kinds?: string }>;
+    const queued = this.db.raw.prepare("SELECT id, target_user_ids, target_labels, target_kinds FROM notification_queue WHERE main_user_id<>?").all(userId) as Array<{ id: number; target_user_ids: string; target_labels: string; target_kinds?: string }>;
     const matchingQueue = queued.filter((item) => (JSON.parse(item.target_user_ids) as string[]).includes(userId));
     const hasWatches = Boolean(this.db.raw.prepare("SELECT 1 FROM guild_watches WHERE sub_user_id=? LIMIT 1").get(userId));
-    if (!sub && matchingQueue.length === 0 && !hasWatches) return "none";
+    const hasMainData = Boolean(this.db.raw.prepare("SELECT 1 FROM entitlements WHERE user_id=? UNION SELECT 1 FROM link_codes WHERE main_user_id=? UNION SELECT 1 FROM notification_dedup WHERE main_user_id=? UNION SELECT 1 FROM notification_queue WHERE main_user_id=? UNION SELECT 1 FROM account_links WHERE main_user_id=? LIMIT 1").get(userId, userId, userId, userId, userId));
+    if (!main && !sub && matchingQueue.length === 0 && !hasWatches && !hasMainData) return "none";
     const tx = this.db.raw.transaction(() => {
-      // Account deletion removes this sub's identity from every queue status,
-      // including rows retained by an earlier unlink. Match the Discord user ID
-      // directly because the link may already be gone (or may have been relinked).
+      // A legacy account may be both a main and another main's sub. Remove both
+      // directions atomically, including history retained after unlink; never
+      // return early merely because main_accounts contains this ID.
       this.db.raw.prepare("DELETE FROM guild_watches WHERE sub_user_id=?").run(userId);
+      this.db.raw.prepare("DELETE FROM guild_watches WHERE sub_user_id IN (SELECT sub_user_id FROM account_links WHERE main_user_id=?)").run(userId);
+      this.db.raw.prepare("DELETE FROM notification_queue WHERE main_user_id=?").run(userId);
       for (const item of matchingQueue) {
         const targetIds = JSON.parse(item.target_user_ids) as string[];
         const targetLabels = JSON.parse(item.target_labels) as string[];
@@ -137,9 +128,14 @@ export class AccountService {
         else this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=?, target_kinds=? WHERE id=?").run(JSON.stringify(keep.map((target) => target.targetId)), JSON.stringify(keep.map((target) => target.label)), JSON.stringify(keep.every((target) => target.kind !== undefined) ? keep.map((target) => target.kind) : []), item.id);
       }
       this.db.raw.prepare("DELETE FROM account_links WHERE sub_user_id=?").run(userId);
+      this.db.raw.prepare("DELETE FROM account_links WHERE main_user_id=?").run(userId);
+      this.db.raw.prepare("DELETE FROM link_codes WHERE main_user_id=?").run(userId);
+      this.db.raw.prepare("DELETE FROM notification_dedup WHERE main_user_id=?").run(userId);
+      this.db.raw.prepare("DELETE FROM entitlements WHERE user_id=?").run(userId);
+      this.db.raw.prepare("DELETE FROM main_accounts WHERE user_id=?").run(userId);
     });
     tx();
-    return "sub";
+    return main || hasMainData ? "main" : "sub";
   }
 
   /** Synchronous DB-only check used at both sides of Discord's async boundary. */
@@ -163,7 +159,7 @@ export class AccountService {
       `).all(userId).map((row) => ({ ...(row as { userId: string; username: string; watchOffGuilds: string }), watchOffGuilds: JSON.parse((row as { watchOffGuilds: string }).watchOffGuilds) as string[] }));
       const watches = this.db.raw.prepare("SELECT guild_id FROM guild_watches WHERE sub_user_id IN (SELECT sub_user_id FROM account_links WHERE main_user_id=?) AND enabled=1").all(userId).map((r) => (r as { guild_id: string }).guild_id);
       const watchOffGuilds = this.db.raw.prepare("SELECT DISTINCT guild_id FROM guild_watches WHERE sub_user_id IN (SELECT sub_user_id FROM account_links WHERE main_user_id=?) AND enabled=0").all(userId).map((r) => (r as { guild_id: string }).guild_id);
-      return { kind: "main", plan, linkLimit, links, watches, watchOffGuilds };
+      return { kind: "main", plan, linkLimit, links, watches, watchOffGuilds, alsoLinkedAsSub: Boolean(this.getMainForSub(userId)) };
     }
     const sub = this.getMainForSub(userId);
     if (!sub) return { kind: "none", links: [], watches: [], watchOffGuilds: [] };

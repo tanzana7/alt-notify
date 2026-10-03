@@ -21,6 +21,13 @@ export interface NotificationAuthorization { authorize(input: { mainUserId: stri
 interface Group { mainUserId: string; kind: MentionKind; targetLabels: string[]; targetUserIds: string[]; targetKinds: TargetMentionKind[]; mentionedRoleIds: string[]; }
 
 const MAX_AUTHORIZATION_ATTEMPTS = 3;
+const MAX_SEND_ATTEMPTS = 3;
+
+class AuthorizationRetryError extends Error {
+  public constructor(public readonly decision: Extract<AuthorizationDecision, { kind: "retry" }>) {
+    super(decision.reason);
+  }
+}
 
 function accessDecision(result: AccessCheck): AccessDecision {
   return typeof result === "boolean" ? (result ? { kind: "allowed" } : { kind: "denied" }) : result;
@@ -133,10 +140,9 @@ export class NotificationService {
       // The delivery worker is the only place allowed to turn that uncertainty
       // into a send, after a fresh role and permission check.
       const kind: MentionKind = directMatch ? "direct" : roleMatch || (mentionedRoleIds.length > 0 && member.kind === "retry") ? "role" : "everyone";
-      // When @everyone is also present, an unknown role may later resolve to
-      // either kind. Keep the role candidate now; defer the fallback decision
-      // until the delivery worker verifies the member's current roles.
-      const targetKind: TargetMentionKind = kind === "role" && member.kind === "retry" && message.mentionEveryone ? "role_or_everyone" : kind;
+      // A matched role can disappear before delivery, just as an uncertain
+      // role can resolve absent. Preserve the everyone fallback in either case.
+      const targetKind: TargetMentionKind = kind === "role" && message.mentionEveryone ? "role_or_everyone" : kind;
       const label = labels.get(candidate.subUserId) ?? candidate.username;
       if (existing) {
         if (!existing.targetUserIds.includes(candidate.subUserId)) { existing.targetUserIds.push(candidate.subUserId); existing.targetLabels.push(label); existing.targetKinds.push(targetKind); }
@@ -210,27 +216,32 @@ export class NotificationService {
       let targetIds = JSON.parse(String(row.target_user_ids)) as string[];
       let labels = JSON.parse(String(row.target_labels)) as string[];
       let authorizedById: Map<string, { label: string; kind?: MentionKind | undefined }> | undefined;
-      if (authorization) {
-        let decision: AuthorizationDecision;
+      const deferAuthorization = (decision: Extract<AuthorizationDecision, { kind: "retry" }>): void => {
+        // One queue claim is one authorization-budget unit. A temporary fresh
+        // check on a DM retry returns to the queue rather than sending blind.
+        const attempts = Number(row.attempts ?? 0) + 1;
+        if (attempts >= MAX_AUTHORIZATION_ATTEMPTS) {
+          this.db.raw.prepare("UPDATE notification_queue SET status='failed', available_at=?, last_error=? WHERE id=? AND status='processing'").run(now, decision.reason, row.id);
+          this.logger.warn("notification authorization retry limit reached", { queueId: row.id, reason: decision.reason });
+          failed++;
+        } else {
+          this.db.raw.prepare("UPDATE notification_queue SET status='pending', available_at=?, last_error=? WHERE id=? AND status='processing'").run(now + retryDelayMs(attempts, decision.retryAfterMs), decision.reason, row.id);
+        }
+      };
+      const freshAuthorization = async (currentIds: string[], currentKinds: TargetMentionKind[]): Promise<AuthorizationDecision> => {
+        if (!authorization) return { kind: "authorized", targets: currentIds.map((userId, index) => ({ userId, label: labels[index] ?? userId })) };
         try {
-          const result = await authorization.authorize({ mainUserId: String(row.main_user_id), guildId: String(row.guild_id), channelId: String(row.channel_id ?? ""), kind: row.mention_type as MentionKind, targetUserIds: targetIds, targetKinds: JSON.parse(String(row.target_kinds ?? "[]")) as TargetMentionKind[], mentionedRoleIds: JSON.parse(String(row.target_role_ids ?? "[]")) as string[] });
-          decision = Array.isArray(result) ? { kind: "authorized", targets: result } : result;
+          const result = await authorization.authorize({ mainUserId: String(row.main_user_id), guildId: String(row.guild_id), channelId: String(row.channel_id ?? ""), kind: row.mention_type as MentionKind, targetUserIds: currentIds, targetKinds: currentKinds, mentionedRoleIds: JSON.parse(String(row.target_role_ids ?? "[]")) as string[] });
+          return Array.isArray(result) ? { kind: "authorized", targets: result } : result;
         } catch (error) {
           const failure = classifyDiscordError(error);
-          decision = failure.kind === "temporary" ? { kind: "retry", reason: failure.reason, ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}) } : { kind: "authorized", targets: [] };
+          return failure.kind === "temporary" ? { kind: "retry", reason: failure.reason, ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}) } : { kind: "authorized", targets: [] };
         }
+      };
+      if (authorization) {
+        const decision = await freshAuthorization(targetIds, JSON.parse(String(row.target_kinds ?? "[]")) as TargetMentionKind[]);
         if (decision.kind === "retry") {
-          // The SELECT snapshot contains the value before the conditional
-          // claim increments it, so include the current authorization attempt.
-          const attempts = Number(row.attempts ?? 0) + 1;
-          if (attempts >= MAX_AUTHORIZATION_ATTEMPTS) {
-            this.db.raw.prepare("UPDATE notification_queue SET status='failed', available_at=?, last_error=? WHERE id=? AND status='processing'").run(now, decision.reason, row.id);
-            this.logger.warn("notification authorization retry limit reached", { queueId: row.id, reason: decision.reason });
-            failed++;
-          } else {
-            const availableAt = now + retryDelayMs(attempts, decision.retryAfterMs);
-            this.db.raw.prepare("UPDATE notification_queue SET status='pending', available_at=?, last_error=? WHERE id=? AND status='processing'").run(availableAt, decision.reason, row.id);
-          }
+          deferAuthorization(decision);
           continue;
         }
         const authorizedTargets = new Map(decision.targets.map((target) => [target.userId, { label: target.label, kind: target.kind }]));
@@ -255,10 +266,24 @@ export class NotificationService {
       catch (error) { this.logger.warn("notification display name lookup failed", { queueId: row.id, error: error instanceof Error ? error.message : "unknown" }); }
       try {
         const nonce = notificationNonce(row);
-        const authorizationSnapshot = authorizedById;
-        const delivered = await this.sendWithRetry(async () => {
-          // Repeat the DB-only check for every REST attempt. A delete/unlink
-          // during a failed request must not make a later retry send stale PII.
+        const delivered = await this.sendWithRetry(async (sendAttempt) => {
+          if (sendAttempt > 0 && authorization) {
+            // The first attempt used the fresh check above. Only a retry needs
+            // another Discord fetch; otherwise an in-flight REST failure could
+            // outlive a membership, role or channel-permission change.
+            const current = this.db.raw.prepare("SELECT target_user_ids, target_kinds FROM notification_queue WHERE id=? AND status='processing'").get(row.id) as { target_user_ids: string; target_kinds: string } | undefined;
+            if (!current) return false;
+            const currentIds = JSON.parse(current.target_user_ids) as string[];
+            if (!currentIds.some((userId) => this.accounts.isNotificationTargetActive(String(row.main_user_id), userId, String(row.guild_id)))) {
+              this.db.raw.prepare("UPDATE notification_queue SET status='cancelled', last_error='target inactive before send' WHERE id=? AND status='processing'").run(row.id);
+              return false;
+            }
+            const decision = await freshAuthorization(currentIds, JSON.parse(current.target_kinds) as TargetMentionKind[]);
+            if (decision.kind === "retry") throw new AuthorizationRetryError(decision);
+            authorizedById = new Map(decision.targets.map((target) => [target.userId, { label: target.label, kind: target.kind }]));
+          }
+          // Repeat the DB check after every awaited REST authorization. A
+          // delete/unlink/watch change must not make a retry send stale PII.
           const active = this.db.raw.transaction(() => {
             const current = this.db.raw.prepare("SELECT target_user_ids, target_labels, target_kinds FROM notification_queue WHERE id=? AND status='processing'").get(row.id) as { target_user_ids: string; target_labels: string; target_kinds?: string } | undefined;
             if (!current) return undefined;
@@ -266,17 +291,17 @@ export class NotificationService {
             const currentLabels = JSON.parse(current.target_labels) as string[];
             const currentKinds = JSON.parse(current.target_kinds ?? "[]") as TargetMentionKind[];
             const targets = currentIds.map((userId, index) => ({ userId, label: currentLabels[index] ?? userId, kind: currentKinds.length === currentIds.length ? currentKinds[index] : undefined }))
-              .filter((target) => (!authorizationSnapshot || authorizationSnapshot.has(target.userId)) && this.accounts.isNotificationTargetActive(String(row.main_user_id), target.userId, String(row.guild_id)));
+              .filter((target) => (!authorizedById || authorizedById.has(target.userId)) && this.accounts.isNotificationTargetActive(String(row.main_user_id), target.userId, String(row.guild_id)));
             if (targets.length === 0) {
               this.db.raw.prepare("UPDATE notification_queue SET status='cancelled', last_error='target inactive before send' WHERE id=? AND status='processing'").run(row.id);
               return undefined;
             }
-            const authorizedKinds = targets.map((target) => authorizationSnapshot?.get(target.userId)?.kind);
+            const authorizedKinds = targets.map((target) => authorizedById?.get(target.userId)?.kind);
             const targetDeliveryKind = authorizedKinds.length === targets.length && authorizedKinds.every((kind): kind is MentionKind => kind !== undefined)
               ? authorizedKinds.reduce((best, kind) => mentionPriority(kind) < mentionPriority(best) ? kind : best, "everyone" as MentionKind)
               : deliveryKind;
             const targetIdsJson = JSON.stringify(targets.map((target) => target.userId));
-            const labels = targets.map((target) => authorizationSnapshot?.get(target.userId)?.label ?? target.label);
+            const labels = targets.map((target) => authorizedById?.get(target.userId)?.label ?? target.label);
             const labelsJson = JSON.stringify(labels);
             const kindsJson = JSON.stringify(targets.every((target) => target.kind !== undefined) ? targets.map((target) => target.kind) : []);
             if (targetDeliveryKind === "everyone" && now < Number(row.created_at) + 60_000) {
@@ -300,6 +325,10 @@ export class NotificationService {
         this.lastSentAt.set(String(row.main_user_id), sentAt);
         sent++;
       } catch (error) {
+        if (error instanceof AuthorizationRetryError) {
+          deferAuthorization(error.decision);
+          continue;
+        }
         const message = error instanceof Error ? error.message : "unknown send error";
         this.db.raw.prepare("UPDATE notification_queue SET status='failed', available_at=?, last_error=? WHERE id=? AND status='processing'").run(now, message.slice(0, 500), row.id);
         this.logger.error("notification send failed", { queueId: row.id, mainUserId: row.main_user_id, error: message.slice(0, 200) });
@@ -309,12 +338,13 @@ export class NotificationService {
     return { sent, failed };
   }
 
-  private async sendWithRetry(send: () => Promise<boolean>): Promise<boolean> {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try { return await send(); }
+  private async sendWithRetry(send: (attempt: number) => Promise<boolean>): Promise<boolean> {
+    for (let attempt = 0; attempt < MAX_SEND_ATTEMPTS; attempt++) {
+      try { return await send(attempt); }
       catch (error) {
+        if (error instanceof AuthorizationRetryError) throw error;
         const failure = classifyDiscordError(error);
-        if (attempt === 2 || failure.kind !== "temporary") throw error;
+        if (attempt === MAX_SEND_ATTEMPTS - 1 || failure.kind !== "temporary") throw error;
         const delayMs = failure.retryAfterMs ?? 250 * (2 ** attempt);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }

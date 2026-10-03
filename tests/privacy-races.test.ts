@@ -220,3 +220,44 @@ describe("unlink then account delete history cleanup", () => {
     expect(state.accounts.deleteAccount("never-saved")).toBe("none");
   });
 });
+
+describe("legacy dual-role deletion and new-role boundaries", () => {
+  it("deletes both directions and all-status target history while preserving other targets", async () => {
+    const state = await setup();
+    await state.accounts.registerMain("other-main", "Other Main", async () => undefined, 1_000);
+    await state.accounts.registerMain("dual", "Dual Name", async () => undefined, 1_000);
+    const ownCode = state.accounts.issueLinkCode("dual", 1_000);
+    state.accounts.approveLinkByHash("own-sub", state.accounts.hashForApproval(ownCode), "Own Sub", 1_001);
+    const otherCode = state.accounts.issueLinkCode("other-main", 1_000);
+    state.accounts.approveLinkByHash("other-sub", state.accounts.hashForApproval(otherCode), "Other Sub", 1_001);
+    // Legacy rows can contain both roles even though new approvals forbid it.
+    state.db.raw.prepare("INSERT INTO account_links(sub_user_id, main_user_id, username, created_at) VALUES ('dual','other-main','Dual Name',1000)").run();
+    state.db.raw.prepare("INSERT INTO guild_watches(guild_id, sub_user_id, enabled, created_at) VALUES ('guild','dual',0,1000),('guild','own-sub',0,1000)").run();
+    state.accounts.issueLinkCode("dual", 1_000);
+    state.db.raw.prepare("INSERT INTO notification_dedup(main_user_id,message_id,created_at) VALUES ('dual','own-message',1000)").run();
+    const insert = state.db.raw.prepare("INSERT INTO notification_queue(main_user_id,message_id,guild_id,kind,mention_type,target_user_ids,target_labels,target_kinds,status,available_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,1000,1000)");
+    insert.run("dual", "own-message", "guild", "direct", "direct", '["own-sub"]', '["Own Sub"]', '["direct"]', "sent");
+    for (const status of ["pending", "processing", "sent", "failed", "cancelled"]) {
+      insert.run("other-main", `dual-${status}`, "guild", "direct", "direct", '["dual"]', '["Dual Name"]', '["direct"]', status);
+    }
+    insert.run("other-main", "grouped", "guild", "direct", "direct", '["dual","other-sub"]', '["Dual Name","Other Sub"]', '["direct","role"]', "sent");
+    expect(state.accounts.getStatus("dual")).toMatchObject({ kind: "main", alsoLinkedAsSub: true });
+    expect(state.accounts.deleteAccount("dual")).toBe("main");
+    for (const [table, clause] of [
+      ["main_accounts", "user_id='dual'"], ["entitlements", "user_id='dual'"],
+      ["link_codes", "main_user_id='dual'"], ["account_links", "main_user_id='dual' OR sub_user_id='dual'"],
+      ["guild_watches", "sub_user_id IN ('dual','own-sub')"], ["notification_dedup", "main_user_id='dual'"],
+      ["notification_queue", "main_user_id='dual' OR target_user_ids LIKE '%dual%' OR target_labels LIKE '%Dual Name%' OR target_kinds LIKE '%dual%'" ]
+    ]) expect(state.db.raw.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${clause}`).get()?.count).toBe(0);
+    expect(state.db.raw.prepare("SELECT target_user_ids,target_labels,target_kinds FROM notification_queue WHERE message_id='grouped'").get()).toMatchObject({ target_user_ids: '["other-sub"]', target_labels: '["Other Sub"]', target_kinds: '["role"]' });
+    expect(state.accounts.deleteAccount("dual")).toBe("none");
+  });
+
+  it("rejects a linked sub becoming main and a registered main becoming sub", async () => {
+    const state = await setup(); await link(state.accounts, "sub");
+    await expect(async () => state.accounts.registerMain("sub", "Sub", async () => { throw new Error("must not send DM"); })).rejects.toThrow("サブアカウントとして連携");
+    await state.accounts.registerMain("already-main", "Main", async () => undefined);
+    const code = state.accounts.issueLinkCode("main", 1_000);
+    expect(() => state.accounts.approveLinkByHash("already-main", state.accounts.hashForApproval(code), "Main", 1_001)).toThrow("メインアカウントとして登録済み");
+  });
+});
