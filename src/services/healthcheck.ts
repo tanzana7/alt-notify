@@ -13,7 +13,9 @@ export class HealthcheckService {
     private readonly maxPending: number,
     private readonly maxFailuresIn15m: number,
     private readonly request: HealthcheckRequest = async (url) => {
-      const response = await fetch(url, { method: "GET", signal: AbortSignal.timeout(5_000) });
+      // Match the configuration probe: only the configured endpoint's own 2xx
+      // may count as a heartbeat; redirects must not leave that trust boundary.
+      const response = await fetch(url, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(5_000) });
       return response.ok;
     },
     private readonly now = () => Date.now()

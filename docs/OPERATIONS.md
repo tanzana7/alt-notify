@@ -93,7 +93,7 @@ SSH鍵の探索順と`-KeyPath "..."`による上書きはToken更新と同じ�
 
 配置時はリポジトリの`deploy/probe-heartbeat.mjs`をOracleの一時ステージへ転送し、`sudo install -d -o root -g root -m 755 /usr/local/lib/altnoti`、`sudo install -o root -g root -m 644 <stage>/probe-heartbeat.mjs /usr/local/lib/altnoti/probe-heartbeat.mjs`を実行する。両設定スクリプトは`/usr/local/sbin/`へ`root:root 755`で配置する。設定実行前に`stat`とローカル/OracleのSHA-256一致で3ファイルを確認する。設定スクリプトは秘密入力を受け取るため、配置確認のために本番値で実行しない。
 
-現在の全ShardがReadyで、pending/processingが200未満、直近15分のfailedが5未満の場合だけ成功heartbeatを送る。1つでもShardが再接続中なら送信せず、Healthchecks側の期限切れで検知する。閾値を超えた場合は`/fail`を送る。URL未設定時は外部通信しない。
+現在の全ShardがReadyで、pending/processingが200未満、直近15分のfailedが5未満の場合だけ成功heartbeatを送る。1つでもShardが再接続中なら送信せず、Healthchecks側の期限切れで検知する。閾値を超えた場合は`/fail`を送る。設定時probeと定期heartbeatはどちらもリダイレクトを追跡せず、3xxを失敗扱いにする。URL未設定時は外部通信しない。
 
 ## Discord実機確認
 
