@@ -528,10 +528,10 @@ describe("watch and notification flow", () => {
     await registerMain(accounts); await link(accounts, "main", "a", "a");
     await notifications.inspect({ id: "health-pending", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["a"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true });
     const requests: string[] = [];
-    const healthy = new HealthcheckService(db, new Logger("error"), "https://healthchecks.example/test", 2, 5, async (url) => { requests.push(url); return true; });
+    const healthy = new HealthcheckService(db, new Logger("error"), "https://healthchecks.example/test", 2, 5, async (url) => { requests.push(url); return true; }, () => 1_000);
     await expect(healthy.check(true)).resolves.toMatchObject({ healthy: true, requestSent: true, reason: "ok" });
     expect(requests).toEqual(["https://healthchecks.example/test"]);
-    const overloaded = new HealthcheckService(db, new Logger("error"), "https://healthchecks.example/test", 1, 5, async (url) => { requests.push(url); return true; });
+    const overloaded = new HealthcheckService(db, new Logger("error"), "https://healthchecks.example/test", 1, 5, async (url) => { requests.push(url); return true; }, () => 1_000);
     await expect(overloaded.check(true)).resolves.toMatchObject({ healthy: false, requestSent: true, reason: "queue_or_failure_threshold" });
     expect(requests[1]).toBe("https://healthchecks.example/test/fail");
   });

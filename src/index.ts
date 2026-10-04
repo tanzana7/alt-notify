@@ -61,7 +61,11 @@ const notifications = new NotificationService(
     };
   }
 );
-const healthchecks = new HealthcheckService(db, logger, config.HEALTHCHECKS_HEARTBEAT_URL, config.HEALTHCHECKS_MAX_PENDING_QUEUE, config.HEALTHCHECKS_MAX_FAILURES_15M);
+const healthchecks = new HealthcheckService(db, logger, config.HEALTHCHECKS_HEARTBEAT_URL, config.HEALTHCHECKS_MAX_PENDING_QUEUE, config.HEALTHCHECKS_MAX_FAILURES_15M, undefined, undefined, {
+  maxQueueAgeMs: config.HEALTHCHECKS_MAX_QUEUE_AGE_MS,
+  maxOffsiteBackupAgeMs: config.HEALTHCHECKS_MAX_OFFSITE_BACKUP_AGE_MS,
+  offsiteStatusPath: config.HEALTHCHECKS_OFFSITE_STATUS_PATH
+});
 const pendingApprovals = new ApprovalStore();
 const pendingDeletions = new ApprovalStore();
 const memberCache = new MemberCache<GuildMember>(5_000);

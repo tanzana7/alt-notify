@@ -12,7 +12,7 @@
 - バックアップ: `altnoti-backup.timer`（毎日、最新7世代）
 - 外部監視: Healthchecks heartbeat（本番設定済み。成功pingと通知先を外部ダッシュボードで確認）
 
-既知P2：heartbeatはpending件数・直近failed件数を監視しますが、少数キューの最古待機時間はまだ判定していません。Windows VM外バックアップのTask Scheduler失敗にも専用の外部通知はありません。運営時はキュー待機時間とタスク最終結果を別途確認し、監視追加を後続課題とします。
+HealthchecksはGateway全Shard Ready、pending/processing件数、直近15分のfailed件数に加え、送信可能時刻`available_at`を過ぎたキューの最古滞留時間（既定5分）を判定する。everyoneの60秒遅延や未来のretry予定は滞留に数えない。Windows VM外バックアップはroot管理の`/var/lib/altnoti-monitoring/offsite-backup-status.json`に成功・失敗と最終成功時刻のみを記録する。`alt-notify.service`は読み取り専用で、ユーザーID・Windowsパス・秘密値は記録しない。明示失敗または最終成功から既定36時間以上で既存Healthchecksへ`/fail`を送り、次の成功で自動復帰する。Windows PC停止・未ログオン中はTask Schedulerが走らないため、このstale判定で検知する。
 
 BotはNode.js＋systemdで動作させる。1GB VMではDocker常駐のオーバーヘッドを避け、Nodeプロセスのメモリ上限をsystemdの`MemoryMax`で制御する。Windows版Botは本番稼働中に起動しない。
 
@@ -61,6 +61,8 @@ VM外バックアップにはWindows側の`deploy/pull-offsite-backup.ps1`を使
 
 現在は毎日06:00 JSTに`AltNotifyOffsiteBackup`タスクを登録済み。Windows上で新規登録する場合は`deploy/install-offsite-task.ps1 -At "HH:mm"`を実行する。現在ユーザーのログオン中だけ走り、PC停止中の実行は次回利用可能時に開始する。バッテリー駆動中も実行可能に設定する。タスクの最終実行結果が失敗した場合は、VM外コピーが更新されていないものとして調査する。Windows PowerShell 5.1でも文字列を正しく読めるよう、実行するスクリプトはUTF-8 BOMで保存する。
 
+監視導入時は、既存WindowsバックアップのSQLite整合性を確認し、更新済み`pull-offsite-backup.ps1`を既存タスクで1回実行する。Oracleの状態ファイルが`state=ok`になった後でのみ、新runtimeを起動する。状態ファイルの既定パスは`/var/lib/altnoti-monitoring/offsite-backup-status.json`で、秘密を含む環境ファイルの変更は不要。欠落・不正な状態ファイルはfail-closed。状態ファイルの親ディレクトリは`root:altnoti 750`、ファイルは`root:altnoti 640`で、Botに書込権限を与えない。失敗したバックアップの詳細はWindowsタスク結果とローカル実行結果で調べ、状態ファイルには固定failure codeのみ記録する。秘密URLやTokenを状態ファイル・ログへ転記しない。
+
 DBが欠落・空・破損した場合は、まずサービスを停止して原因と日次バックアップの整合性を調べる。**本番パスで新規DBを作らない。** 復元が必要なら上記の手順で検証済みバックアップから復元し、復元前後のmain/link件数とキュー状態を確認する。既存DBが見つかった場合も上書きせず、別名で保全してから判断する。
 
 ## デプロイ
@@ -101,7 +103,7 @@ SSH鍵の探索順と`-KeyPath "..."`による上書きはToken更新と同じ�
 
 配置時はリポジトリの`deploy/probe-heartbeat.mjs`をOracleの一時ステージへ転送し、`sudo install -d -o root -g root -m 755 /usr/local/lib/altnoti`、`sudo install -o root -g root -m 644 <stage>/probe-heartbeat.mjs /usr/local/lib/altnoti/probe-heartbeat.mjs`を実行する。両設定スクリプトは`/usr/local/sbin/`へ`root:root 755`で配置する。設定実行前に`stat`とローカル/OracleのSHA-256一致で3ファイルを確認する。設定スクリプトは秘密入力を受け取るため、配置確認のために本番値で実行しない。
 
-現在の全ShardがReadyで、pending/processingが200未満、直近15分のfailedが5未満の場合だけ成功heartbeatを送る。1つでもShardが再接続中なら送信せず、Healthchecks側の期限切れで検知する。閾値を超えた場合は`/fail`を送る。設定時probeと定期heartbeatはどちらもリダイレクトを追跡せず、3xxを失敗扱いにする。URL未設定時は外部通信しない。
+現在の全ShardがReadyで、pending/processingが200未満、直近15分のfailedが5未満、最古の送信可能キューが5分未満、VM外バックアップ状態が正常かつ最終成功から36時間未満の場合だけ成功heartbeatを送る。1つでもShardが再接続中なら送信せず、Healthchecks側の期限切れで検知する。閾値を超えた場合は`/fail`を送る。設定時probeと定期heartbeatはどちらもリダイレクトを追跡せず、3xxを失敗扱いにする。URL未設定時は外部通信しない。
 
 ## Discord実機確認
 

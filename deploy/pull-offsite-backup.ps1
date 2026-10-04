@@ -11,34 +11,51 @@ if ($PSBoundParameters.ContainsKey("KeyPath")) {
   $KeyPath = & "$PSScriptRoot/resolve-oracle-key.ps1"
 }
 
-New-Item -ItemType Directory -Path $Destination -Force | Out-Null
-$Destination = (Resolve-Path -LiteralPath $Destination).Path
-$account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-& icacls $Destination /inheritance:r /grant:r "${account}:(OI)(CI)F" "SYSTEM:(OI)(CI)F" > $null
-if ($LASTEXITCODE -ne 0) { throw "バックアップ保存先のアクセス制限に失敗しました" }
-
 $sshArgs = @("-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-i", $KeyPath, "ubuntu@$RemoteHost")
-$metadata = & ssh @sshArgs "sudo /usr/local/sbin/altnoti-offsite-prepare"
-if ($LASTEXITCODE -ne 0 -or $metadata.Count -ne 1 -or $metadata -notmatch '^discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite [0-9a-f]{64}$') {
-  throw "Oracle側のバックアップ準備に失敗しました"
-}
-$backupName, $remoteHash = $metadata -split ' '
-$temporaryPath = Join-Path $Destination "$backupName.partial"
-$finalPath = Join-Path $Destination $backupName
+$backupName = $null
+$temporaryPath = $null
+$failureCode = "prepare_failed"
 try {
+  New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+  $Destination = (Resolve-Path -LiteralPath $Destination).Path
+  $account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+  & icacls $Destination /inheritance:r /grant:r "${account}:(OI)(CI)F" "SYSTEM:(OI)(CI)F" > $null
+  if ($LASTEXITCODE -ne 0) { throw "バックアップ保存先のアクセス制限に失敗しました" }
+
+  $metadata = & ssh @sshArgs "sudo /usr/local/sbin/altnoti-offsite-prepare"
+  if ($LASTEXITCODE -ne 0 -or $metadata.Count -ne 1 -or $metadata -notmatch '^discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite [0-9a-f]{64}$') {
+    throw "Oracle側のバックアップ準備に失敗しました"
+  }
+  $backupName, $remoteHash = $metadata -split ' '
+  $temporaryPath = Join-Path $Destination "$backupName.partial"
+  $finalPath = Join-Path $Destination $backupName
+  $failureCode = "transfer_failed"
   if (Test-Path -LiteralPath $temporaryPath) { Remove-Item -LiteralPath $temporaryPath -Force }
   & scp -B -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i $KeyPath "ubuntu@${RemoteHost}:/home/ubuntu/.altnoti-offsite-staging/$backupName" $temporaryPath
   if ($LASTEXITCODE -ne 0) { throw "バックアップ転送に失敗しました" }
+  $failureCode = "hash_mismatch"
   $localHash = (Get-FileHash -LiteralPath $temporaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($localHash -ne $remoteHash) { throw "バックアップのハッシュが一致しません" }
+  $failureCode = "sqlite_invalid"
   & node "$PSScriptRoot/verify-offsite-backup.mjs" $temporaryPath
   if ($LASTEXITCODE -ne 0) { throw "Windows側のバックアップ整合性確認に失敗しました" }
+  $failureCode = "final_save_failed"
   if (Test-Path -LiteralPath $finalPath) { throw "同名のバックアップが既に存在します" }
   Move-Item -LiteralPath $temporaryPath -Destination $finalPath
   $backups = Get-ChildItem -LiteralPath $Destination -File | Where-Object { $_.Name -match '^discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite$' } | Sort-Object Name -Descending
   $backups | Select-Object -Skip 14 | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+  # Only the completely verified and saved Windows copy can advance success.
+  $failureCode = "status_update_failed"
+  & ssh @sshArgs "sudo /usr/local/sbin/altnoti-offsite-prepare mark-success $backupName $remoteHash" > $null
+  if ($LASTEXITCODE -ne 0) { throw "Oracle側のバックアップ状態更新に失敗しました" }
   Write-Output "VM外バックアップ成功: $backupName (SHA-256一致、SQLite整合性OK)"
+} catch {
+  # The original backup error remains the task result even if SSH is also down.
+  try { & ssh @sshArgs "sudo /usr/local/sbin/altnoti-offsite-prepare mark-failure $failureCode" > $null 2> $null } catch { }
+  throw
 } finally {
-  if (Test-Path -LiteralPath $temporaryPath) { Remove-Item -LiteralPath $temporaryPath -Force }
-  & ssh @sshArgs "sudo /usr/local/sbin/altnoti-offsite-prepare cleanup $backupName" > $null
+  if ($temporaryPath -and (Test-Path -LiteralPath $temporaryPath)) { Remove-Item -LiteralPath $temporaryPath -Force }
+  if ($backupName) {
+    try { & ssh @sshArgs "sudo /usr/local/sbin/altnoti-offsite-prepare cleanup $backupName" > $null 2> $null } catch { }
+  }
 }

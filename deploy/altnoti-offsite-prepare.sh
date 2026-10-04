@@ -4,14 +4,7 @@ set -euo pipefail
 backup_dir=/var/lib/altnoti/backups
 db_path=/var/lib/altnoti/discord-alt-notify.sqlite
 staging_dir=/home/ubuntu/.altnoti-offsite-staging
-
-if [[ ${1:-} == cleanup ]]; then
-  backup_name=${2:-}
-  [[ $backup_name =~ ^discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite$ ]] || exit 2
-  rm -f -- "$staging_dir/$backup_name"
-  exit 0
-fi
-[[ $# -eq 0 ]] || exit 2
+status_helper=/usr/local/lib/altnoti/offsite-status.mjs
 
 check_integrity() {
   python3 - "$1" <<'PY'
@@ -26,6 +19,34 @@ finally:
     connection.close()
 PY
 }
+
+if [[ ${1:-} == cleanup ]]; then
+  backup_name=${2:-}
+  [[ $backup_name =~ ^discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite$ ]] || exit 2
+  rm -f -- "$staging_dir/$backup_name"
+  exit 0
+fi
+if [[ ${1:-} == mark-failure ]]; then
+  [[ $# -eq 2 ]] || exit 2
+  exec node "$status_helper" mark-failure "$2"
+fi
+if [[ ${1:-} == mark-success ]]; then
+  [[ $# -eq 3 ]] || exit 2
+  backup_name=$2
+  expected_hash=$3
+  [[ $backup_name =~ ^discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite$ && $expected_hash =~ ^[0-9a-f]{64}$ ]] || exit 2
+  staged_path="$staging_dir/$backup_name"
+  [[ -f $staged_path && ! -L $staged_path ]] || exit 1
+  actual_hash=$(sha256sum "$staged_path")
+  [[ ${actual_hash%% *} == "$expected_hash" ]] || exit 1
+  check_integrity "$staged_path"
+  exec node "$status_helper" mark-success
+fi
+if [[ ${1:-} == status ]]; then
+  [[ $# -eq 1 ]] || exit 2
+  exec node "$status_helper" status
+fi
+[[ $# -eq 0 ]] || exit 2
 
 [[ -s $db_path ]] && check_integrity "$db_path" || { echo 'production database integrity failed' >&2; exit 1; }
 systemctl start altnoti-backup.service
