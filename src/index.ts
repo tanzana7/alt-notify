@@ -31,6 +31,8 @@ import { authorizeQueuedNotification } from "./services/authorization.js";
 import { SingleFlight } from "./services/single-flight.js";
 import { UserFacingError, userMessageForError } from "./services/user-error.js";
 import { confirmAccountDeletion } from "./services/account-delete-button.js";
+import { cancelAccountDeletion } from "./services/account-delete-button.js";
+import { createDiscordNotificationSender } from "./services/discord-notification-sender.js";
 
 const config = loadConfig();
 const logger = new Logger(config.LOG_LEVEL);
@@ -179,7 +181,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isChatInputCommand()) await handleCommand(interaction);
   if (!interaction.isButton()) return;
   if (interaction.customId.startsWith("account-delete-cancel:")) {
-    await interaction.update({ content: "削除をキャンセルしました。", components: [] });
+    const token = interaction.customId.slice("account-delete-cancel:".length);
+    try { await cancelAccountDeletion(interaction, token, pendingDeletions); }
+    catch (error) { await privateReply(interaction, interactionError(error, "account delete cancel")); }
     return;
   }
   if (interaction.customId.startsWith("account-delete:")) {
@@ -213,8 +217,9 @@ client.on(Events.MessageCreate, async (message) => {
   } catch (error) { logger.error("message inspection failed", { error: error instanceof Error ? error.message : "unknown" }); }
 });
 
+const notificationSender = createDiscordNotificationSender(client.users);
 const timer = setInterval(() => {
-  void notificationWorker.run(() => notifications.drain({ send: async (mainUserId, content, nonce) => { const user = await client.users.fetch(mainUserId); await user.send({ content, nonce, enforceNonce: true, allowedMentions: { parse: [] } }); } }, Date.now(), 50, { authorize: (input) => authorizeQueuedNotification(client, accounts, input) })).catch((error) => logger.error("notification worker failed", { error: error instanceof Error ? error.message : "unknown" }));
+  void notificationWorker.run(() => notifications.drain(notificationSender, Date.now(), 50, { authorize: (input) => authorizeQueuedNotification(client, accounts, input) })).catch((error) => logger.error("notification worker failed", { error: error instanceof Error ? error.message : "unknown" }));
 }, 5_000);
 const memoryCleanupTimer = setInterval(() => {
   pendingApprovals.cleanup();

@@ -12,6 +12,8 @@
 - バックアップ: `altnoti-backup.timer`（毎日、最新7世代）
 - 外部監視: Healthchecks heartbeat（本番設定済み。成功pingと通知先を外部ダッシュボードで確認）
 
+既知P2：heartbeatはpending件数・直近failed件数を監視しますが、少数キューの最古待機時間はまだ判定していません。Windows VM外バックアップのTask Scheduler失敗にも専用の外部通知はありません。運営時はキュー待機時間とタスク最終結果を別途確認し、監視追加を後続課題とします。
+
 BotはNode.js＋systemdで動作させる。1GB VMではDocker常駐のオーバーヘッドを避け、Nodeプロセスのメモリ上限をsystemdの`MemoryMax`で制御する。Windows版Botは本番稼働中に起動しない。
 
 本番起動ではDBの存在、通常ファイル、非空、SQLite整合性、必須の既存テーブルをGatewayログイン前に検証する。失敗した場合は**起動を中止**し、空DBを自動生成しない。systemdの`ExecStartPre`も非空ファイルを確認する。ローカルのテスト用DB作成は`SqliteDatabase.open`の通常モードで引き続き可能。

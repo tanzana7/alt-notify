@@ -11,7 +11,7 @@ export type AccessDecision = { kind: "allowed" } | { kind: "denied"; reason?: st
 export type AccessCheck = boolean | AccessDecision;
 export type RoleAccessCheck = string[] | AccessDecision;
 export interface GuildVisibility { isMember(userId: string): Promise<AccessCheck>; getMemberRoleIds?(userId: string): Promise<RoleAccessCheck>; refreshMemberRoleIds?(userId: string): Promise<RoleAccessCheck>; canViewChannel(userId: string): Promise<AccessCheck>; }
-export interface NotificationSender { send(mainUserId: string, content: string, nonce: string): Promise<void>; }
+export interface NotificationSender { send(mainUserId: string, content: string, nonce: string, beforeSend: () => boolean): Promise<boolean | void>; }
 export interface NotificationDisplayNames { guildName?: string; channelName?: string; }
 export type NotificationDisplayNameResolver = (guildId: string, channelId: string) => NotificationDisplayNames;
 export interface AuthorizedTarget { userId: string; label: string; kind?: MentionKind; }
@@ -324,14 +324,34 @@ export class NotificationService {
             const result = this.db.raw.prepare("UPDATE notification_queue SET target_user_ids=?, target_labels=?, target_kinds=?, last_error=NULL WHERE id=? AND status='processing'")
               .run(targetIdsJson, labelsJson, kindsJson, row.id);
             if (result.changes !== 1) return undefined;
-            return { labels, deliveryKind: targetDeliveryKind };
+            return { labels, deliveryKind: targetDeliveryKind, targetIds: targets.map((target) => target.userId), targetIdsJson };
           })();
           if (!active) return false;
           deliveryKind = active.deliveryKind;
           const content = formatNotificationContent(active.deliveryKind, active.labels, displayNames);
-          return sender.send(String(row.main_user_id), content, nonce).then(() => true);
+          const beforeSend = (): boolean => {
+            // User fetch is asynchronous. Recheck after it resolves and just
+            // before user.send() starts, with no await between this guard and
+            // that call. Once the REST send starts, it cannot be recalled.
+            const current = this.db.raw.prepare("SELECT status, target_user_ids FROM notification_queue WHERE id=?").get(row.id) as { status: string; target_user_ids: string } | undefined;
+            if (!current || current.status !== "processing" || current.target_user_ids !== active.targetIdsJson) return false;
+            return active.targetIds.every((userId) => this.accounts.isNotificationTargetActive(String(row.main_user_id), userId, String(row.guild_id)));
+          };
+          return sender.send(String(row.main_user_id), content, nonce, beforeSend).then((didSend) => didSend !== false);
         });
-        if (!delivered) continue;
+        if (!delivered) {
+          // A grouped row can retain another valid target after unlink/delete.
+          // Requeue it for fresh authorization instead of losing that target or
+          // sending a DM containing the removed target's name.
+          const current = this.db.raw.prepare("SELECT target_user_ids FROM notification_queue WHERE id=? AND status='processing'").get(row.id) as { target_user_ids: string } | undefined;
+          if (current) {
+            const currentIds = JSON.parse(current.target_user_ids) as string[];
+            const hasActiveTarget = currentIds.some((userId) => this.accounts.isNotificationTargetActive(String(row.main_user_id), userId, String(row.guild_id)));
+            if (hasActiveTarget) this.db.raw.prepare("UPDATE notification_queue SET status='pending', available_at=?, attempts=attempts-1, last_error='targets changed before send' WHERE id=? AND status='processing'").run(now, row.id);
+            else this.db.raw.prepare("UPDATE notification_queue SET status='cancelled', last_error='target inactive before send' WHERE id=? AND status='processing'").run(row.id);
+          }
+          continue;
+        }
         const sentAt = Math.max(now, this.now());
         this.db.raw.prepare("UPDATE notification_queue SET status='sent', kind=?, mention_type=?, sent_at=? WHERE id=? AND status='processing'").run(deliveryKind === "everyone" ? "everyone" : "direct", deliveryKind, sentAt, row.id);
         this.lastSentAt.set(String(row.main_user_id), sentAt);

@@ -7,6 +7,7 @@ import { AccountService } from "../src/services/accounts.js";
 import { Logger } from "../src/logger.js";
 import { NotificationService } from "../src/services/notifications.js";
 import { WatchService } from "../src/services/watches.js";
+import { createDiscordNotificationSender } from "../src/services/discord-notification-sender.js";
 
 const resources: Array<{ db: SqliteDatabase; dir: string }> = [];
 
@@ -218,6 +219,94 @@ describe("unlink then account delete history cleanup", () => {
     expect(state.accounts.deleteAccount("sub")).toBe("sub");
     expect(queueCount(state.db, "orphan-history")).toBe(0);
     expect(state.accounts.deleteAccount("never-saved")).toBe("none");
+  });
+});
+
+describe("final guard after Discord user fetch", () => {
+  async function pendingFetch(messageId: string) {
+    const state = await setup();
+    await enqueue(state, messageId, ["sub"]);
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const sent: Array<{ content: string; nonce: string; enforceNonce: boolean; allowedMentions: { parse: string[] } }> = [];
+    const sender = createDiscordNotificationSender({ fetch: async () => {
+      started.resolve();
+      await release.promise;
+      return { send: async (message: { content: string; nonce: string; enforceNonce: boolean; allowedMentions: { parse: string[] } }) => { sent.push(message); } };
+    } } as never);
+    const draining = state.notifications.drain(sender, 1_000, 50, { authorize: async () => [{ userId: "sub", label: "Name-sub", kind: "direct" }] });
+    await started.promise;
+    return { state, release, draining, sent };
+  }
+
+  it("cancels if unlink occurs while users.fetch waits", async () => {
+    const pending = await pendingFetch("fetch-unlink");
+    pending.state.accounts.unlink("sub");
+    pending.release.resolve(); await pending.draining;
+    expect(pending.sent).toHaveLength(0);
+    expect(pending.state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='fetch-unlink'").get()?.status).toBe("cancelled");
+  });
+
+  it("cancels if watch is turned off while users.fetch waits", async () => {
+    const pending = await pendingFetch("fetch-watch-off");
+    await pending.state.watches.set("guild", "sub", false, { isMember: async () => true });
+    pending.release.resolve(); await pending.draining;
+    expect(pending.sent).toHaveLength(0);
+    expect(pending.state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='fetch-watch-off'").get()?.status).toBe("cancelled");
+  });
+
+  it("does not send or restore deleted history if account delete occurs during users.fetch", async () => {
+    const pending = await pendingFetch("fetch-account-delete");
+    expect(pending.state.accounts.deleteAccount("sub")).toBe("sub");
+    pending.release.resolve(); await pending.draining;
+    expect(pending.sent).toHaveLength(0);
+    expect(queueCount(pending.state.db, "fetch-account-delete")).toBe(0);
+  });
+
+  it("sends once with the same nonce and mentions disabled in the normal case", async () => {
+    const pending = await pendingFetch("fetch-normal");
+    pending.release.resolve(); await pending.draining;
+    expect(pending.sent).toHaveLength(1);
+    expect(pending.sent[0]?.enforceNonce).toBe(true);
+    expect(pending.sent[0]?.nonce).toMatch(/^an:/);
+    expect(pending.sent[0]?.allowedMentions).toEqual({ parse: [] });
+    expect(pending.state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='fetch-normal'").get()?.status).toBe("sent");
+  });
+
+  it("checks again after users.fetch on a retry", async () => {
+    const state = await setup(); await enqueue(state, "fetch-retry", ["sub"]);
+    const secondStarted = deferred<void>(); const release = deferred<void>();
+    let fetches = 0; let sends = 0;
+    const sender = createDiscordNotificationSender({ fetch: async () => {
+      fetches++;
+      if (fetches === 2) { secondStarted.resolve(); await release.promise; }
+      return { send: async () => { sends++; if (sends === 1) throw { status: 503 }; } };
+    } } as never);
+    const draining = state.notifications.drain(sender, 1_000, 50, { authorize: async () => [{ userId: "sub", label: "Name-sub", kind: "direct" }] });
+    await secondStarted.promise;
+    state.accounts.unlink("sub");
+    release.resolve(); await draining;
+    expect(fetches).toBe(2);
+    expect(sends).toBe(1);
+    expect(state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='fetch-retry'").get()?.status).toBe("cancelled");
+  });
+
+  it("requeues a surviving grouped target for fresh authorization", async () => {
+    const state = await setup(); await enqueue(state, "fetch-grouped", ["a", "b"]);
+    const started = deferred<void>(); const release = deferred<void>();
+    const sent: string[] = [];
+    const sender = createDiscordNotificationSender({ fetch: async () => {
+      started.resolve(); await release.promise;
+      return { send: async (message: { content: string }) => { sent.push(message.content); } };
+    } } as never);
+    const authorize = { authorize: async () => [{ userId: "a", label: "Name-a", kind: "direct" as const }, { userId: "b", label: "Name-b", kind: "direct" as const }] };
+    const draining = state.notifications.drain(sender, 1_000, 50, authorize);
+    await started.promise; state.accounts.unlink("a"); release.resolve(); await draining;
+    expect(sent).toHaveLength(0);
+    expect(state.db.raw.prepare("SELECT status, attempts FROM notification_queue WHERE message_id='fetch-grouped'").get()).toMatchObject({ status: "pending", attempts: 0 });
+    await state.notifications.drain(sender, 1_000, 50, authorize);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("Name-b"); expect(sent[0]).not.toContain("Name-a");
   });
 });
 

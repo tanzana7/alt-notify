@@ -19,3 +19,14 @@ export async function confirmAccountDeletion(
     components: []
   });
 }
+
+export async function cancelAccountDeletion(
+  interaction: Pick<ButtonInteraction, "user" | "update">,
+  token: string,
+  approvals: ApprovalStore
+): Promise<void> {
+  // Confirm and Cancel consume the same one-time token before awaiting Discord.
+  // The first valid interaction wins; a late Cancel cannot undo a started delete.
+  approvals.consume(token, interaction.user.id);
+  await interaction.update({ content: "削除をキャンセルしました。", components: [] });
+}

@@ -2,12 +2,12 @@
 <html lang="ja">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Alt Notify Privacy Policy"><title>Privacy Policy — Alt Notify</title><link rel="stylesheet" href="/styles.css"></head>
 <body><header class="wrap nav"><a class="brand" href="/">Alt Notify</a><nav class="nav-links"><a href="/terms.html">Terms</a><a href="/">トップ</a></nav></header>
-<main class="wrap legal"><span class="eyebrow">Public Beta</span><h1>Privacy Policy</h1><p class="muted">最終更新：2026-10-02</p>
+<main class="wrap legal"><span class="eyebrow">Public Beta</span><h1>Privacy Policy</h1><p class="muted">最終更新：2026-10-04</p>
 <h2>DBに保存する情報</h2><ul><li>Discord User ID、username / display name、連携関係、プラン情報</li><li>Guild ID、Channel ID、Message ID、対象Role ID、watch設定</li><li>連携コードのハッシュと期限、通知キュー、重複排除、送信試行・エラー情報</li></ul>
 <h2>一時的に扱う情報</h2><p>Guild名・Channel名は通知表示のためDiscordのキャッシュから参照します。メンバー情報も通知判定のためメモリ上のキャッシュで扱います。これらの名前はDBに保存しません。</p>
 <h2>保存しない情報</h2><p>メッセージ本文、添付ファイル、DM本文、Discordパスワード、Discord User Token、キーワード、全メンバー一覧は保存・転送しません。Message Content Intentも使用しません。非公開スレッドは通知対象外です。</p>
 <h2>利用目的</h2><p>本人承認済みのアカウント連携、通知判定、重複排除、送信再試行、障害調査、バックアップと復元確認に利用します。内部IDは必要な処理に使いますが、ユーザー向け通知DMには表示しません。</p>
-<h2>保存場所とバックアップ</h2><p>本番データは運営者が管理するOracle Cloud VM上のSQLiteに保存し、同一環境内に世代バックアップを保持します。削除後もバックアップ保持期間中は古いデータが残る場合があります。</p>
+<h2>保存場所とバックアップ</h2><p>本番データは運営者が管理するOracle Cloud VM上のSQLiteに保存し、同一VM内に世代バックアップを保持します。VM障害への備えとして、運営者管理のWindows PCにもVM外バックアップを保存します。転送時にSHA-256とSQLite整合性を確認し、Windows側は現在最大14世代を保持します。Windows PCの停止中・未ログオン中は取得と世代更新が行われません。削除済みデータも、Oracle VM内・Windows側のバックアップ保持世代が失効するまで残る可能性があります。このバックアップによってDiscordのメッセージ本文やBot Tokenなどを追加保存することはありません。</p>
 <h2>外部サービス</h2><p>Discord公式APIを利用します。HealthchecksのURLが設定されている場合のみ、Gateway・キュー・失敗状態を示すheartbeat/failリクエストを送信します。Discordのメッセージ内容は外部監視へ送信しません。</p>
 <h2>削除</h2><p><code>/unlink</code> は連携を解除し、そのアカウントへの今後の通知を停止します。未送信・処理中の通知から対象を除き、他の対象がいなければ取消します。送信済みなど過去の通知履歴は保持される場合があります。<code>/account delete</code> は連携の有無にかかわらず、実行した本人の保存済みデータを削除します。unlink後でも、送信済み・失敗・取消済みを含む通知履歴から本人のIDと表示名を除去できます。バックアップ上のコピーは保持期間中残る場合があります。</p>
 <h2>お問い合わせ</h2><p>一般的な問い合わせは <a href="https://github.com/tanzana7/alt-notify/issues">GitHub Issues</a> を利用できます。公開Issueに個人情報・認証情報を投稿しないでください。個人情報に関する相談では、まず非公開の連絡方法を運営者へ確認してください。</p>
