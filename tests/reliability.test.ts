@@ -10,6 +10,7 @@ import { ApprovalStore } from "../src/services/approval.js";
 import { authorizeQueuedNotification } from "../src/services/authorization.js";
 import { HealthcheckService } from "../src/services/healthcheck.js";
 import { MemberCache } from "../src/services/member-cache.js";
+import { createMessageVisibility } from "../src/services/message-visibility.js";
 import { NotificationService, type IncomingMessage } from "../src/services/notifications.js";
 import { SingleFlight } from "../src/services/single-flight.js";
 import { UserFacingError, userMessageForError } from "../src/services/user-error.js";
@@ -55,6 +56,77 @@ async function queuedRole(state: Awaited<ReturnType<typeof setup>>, id: string, 
   await state.notifications.inspect(roleMessage(id), { ...visibility, canViewChannel: async () => true });
   return state.db.raw.prepare("SELECT mention_type, target_role_ids, target_kinds, available_at, status FROM notification_queue WHERE message_id=?").get(id) as { mention_type: string; target_role_ids: string; target_kinds: string; available_at: number; status: string };
 }
+
+describe("role-negative fresh member verification", () => {
+  function visibilityFor(staleRoles: string[], freshRoles: string[], options: { freshError?: unknown; staleView?: boolean; freshView?: boolean } = {}) {
+    let now = 1_000;
+    const cache = new MemberCache<never>(5_000, () => now);
+    const requests: unknown[] = [];
+    const stale = { roles: { cache: new Map(staleRoles.map((id) => [id, {}])) }, allowed: options.staleView ?? true };
+    const fresh = { roles: { cache: new Map(freshRoles.map((id) => [id, {}])) }, allowed: options.freshView ?? true };
+    const guild = {
+      id: "guild",
+      members: {
+        cache: { get: () => stale },
+        fetch: async (request: unknown) => { requests.push(request); if (options.freshError) throw options.freshError; return fresh; }
+      }
+    };
+    const message = { guild, channel: { permissionsFor: (member: { allowed: boolean }) => ({ has: () => member.allowed }) } };
+    return {
+      visibility: createMessageVisibility(message as never, cache),
+      requests,
+      advancePastTtl: () => { now += 6_000; }
+    };
+  }
+
+  it("queues a role gained after a stale cached negative and refreshes expired local cache", async () => {
+    const state = await setup();
+    const access = visibilityFor([], ["role-a"]);
+    expect(await access.visibility.isMember("sub")).toBe(true);
+    access.advancePastTtl();
+    expect(await state.notifications.inspect(roleMessage("new-role"), access.visibility)).toBe(1);
+    expect(access.requests).toEqual([{ user: "sub", force: true }]);
+    expect(state.db.raw.prepare("SELECT mention_type FROM notification_queue WHERE message_id='new-role'").get()?.mention_type).toBe("role");
+  });
+
+  it("uses the fresh member for channel permission after a negative role cache hit", async () => {
+    const state = await setup();
+    const access = visibilityFor([], ["role-a"], { staleView: false, freshView: true });
+    expect(await state.notifications.inspect(roleMessage("fresh-view"), access.visibility)).toBe(1);
+    expect(access.requests).toHaveLength(1);
+  });
+
+  it("does not force-fetch for matched cached roles or direct and everyone-only mentions", async () => {
+    const state = await setup();
+    const access = visibilityFor(["role-a"], ["role-a"]);
+    await state.notifications.inspect(roleMessage("cached-match"), access.visibility);
+    await state.notifications.inspect({ ...roleMessage("direct-no-role"), mentionedRoleIds: [], mentionedUserIds: ["sub"] }, access.visibility);
+    await state.notifications.inspect({ ...roleMessage("everyone-no-role", true), mentionedRoleIds: [] }, access.visibility);
+    expect(access.requests).toHaveLength(0);
+  });
+
+  it("keeps a role candidate for delivery retry on temporary fresh failure", async () => {
+    const state = await setup();
+    const access = visibilityFor([], [], { freshError: { status: 503 } });
+    expect(await state.notifications.inspect(roleMessage("fresh-503"), access.visibility)).toBe(1);
+    expect(state.db.raw.prepare("SELECT mention_type,target_role_ids FROM notification_queue WHERE message_id='fresh-503'").get()).toMatchObject({ mention_type: "role", target_role_ids: '["role-a"]' });
+  });
+
+  it("excludes confirmed non-roles but preserves delayed everyone fallback", async () => {
+    const state = await setup();
+    const access = visibilityFor([], []);
+    expect(await state.notifications.inspect(roleMessage("confirmed-no-role"), access.visibility)).toBe(0);
+    expect(await state.notifications.inspect(roleMessage("confirmed-everyone", true), access.visibility)).toBe(1);
+    expect(state.db.raw.prepare("SELECT mention_type,available_at FROM notification_queue WHERE message_id='confirmed-everyone'").get()).toMatchObject({ mention_type: "everyone", available_at: 61_000 });
+  });
+
+  it("refreshes once per member even when a message mentions multiple roles", async () => {
+    const state = await setup();
+    const access = visibilityFor([], ["role-b"]);
+    expect(await state.notifications.inspect({ ...roleMessage("two-roles"), mentionedRoleIds: ["role-a", "role-b"] }, access.visibility)).toBe(1);
+    expect(access.requests).toHaveLength(1);
+  });
+});
 
 describe("private threads and fresh delivery authorization", () => {
   const visibility = { isMember: async () => true, getMemberRoleIds: async () => ["role-a"], canViewChannel: async () => true };

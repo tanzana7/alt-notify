@@ -12,6 +12,10 @@ if [[ ! -f "$db_path" ]]; then
   echo "database not found: $db_path" >&2
   exit 1
 fi
+if [[ -e "$backup_path" || -e "$temporary_path" ]]; then
+  echo "backup destination already exists" >&2
+  exit 1
+fi
 
 # The application persists atomically, so copying a stable inode gives the
 # backup job a consistent file without stopping the Gateway process.
@@ -19,10 +23,13 @@ cp --reflink=auto --preserve=mode,ownership,timestamps "$db_path" "$temporary_pa
 chmod 600 "$temporary_path"
 mv -f "$temporary_path" "$backup_path"
 
-# Keep the newest seven local recovery points. Off-host encrypted replication
-# remains an operator-controlled step because it requires an external target.
-mapfile -t old_backups < <(find "$backup_dir" -maxdepth 1 -type f -name 'discord-alt-notify-*.sqlite' -printf '%T@ %p\n' | sort -rn | awk 'NR > 7 { sub(/^[^ ]+ /, ""); print }')
+# The copied DB retains the source mtime. During quiet periods, every backup
+# can have the same mtime, so generation order must come from our UTC filename.
+# Ignore temporary and unexpected names rather than deleting unknown files.
+mapfile -t old_backups < <(find "$backup_dir" -maxdepth 1 -type f -regextype posix-extended -regex '.*/discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite' -printf '%f\n' | LC_ALL=C sort -r | awk 'NR > 7')
 if ((${#old_backups[@]} > 0)); then
-  rm -f -- "${old_backups[@]}"
+  for backup_name in "${old_backups[@]}"; do
+    rm -f -- "$backup_dir/$backup_name"
+  done
 fi
 echo "backup created: $backup_path"

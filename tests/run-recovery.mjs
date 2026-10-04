@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const script = join(root, "tests", "recovery-scripts.sh");
+const scripts = ["recovery-scripts.sh", "backup-retention.sh"].map((name) => join(root, "tests", name));
 const candidates = process.platform === "win32"
   ? [
       join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe"),
@@ -16,9 +16,10 @@ if (!bash) {
   console.error("recovery tests require Git Bash on Windows");
   process.exit(1);
 }
-const result = spawnSync(bash, [script], { cwd: root, stdio: "inherit" });
-if (result.error) {
-  console.error("could not run recovery tests");
-  process.exit(1);
+for (const script of scripts) {
+  const result = spawnSync(bash, [script], { cwd: root, stdio: "inherit" });
+  if (result.error || result.status !== 0) {
+    console.error("could not run operational tests");
+    process.exit(result.status ?? 1);
+  }
 }
-process.exit(result.status ?? 1);

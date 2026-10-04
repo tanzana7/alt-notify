@@ -1,4 +1,4 @@
-param([string]$KeyPath)
+﻿param([string]$KeyPath)
 
 $ErrorActionPreference = "Stop"
 if ($PSBoundParameters.ContainsKey("KeyPath")) {

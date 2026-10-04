@@ -10,7 +10,7 @@ export interface IncomingMessage { id: string; guildId: string | null; channelId
 export type AccessDecision = { kind: "allowed" } | { kind: "denied"; reason?: string } | { kind: "retry"; reason: string; retryAfterMs?: number };
 export type AccessCheck = boolean | AccessDecision;
 export type RoleAccessCheck = string[] | AccessDecision;
-export interface GuildVisibility { isMember(userId: string): Promise<AccessCheck>; getMemberRoleIds?(userId: string): Promise<RoleAccessCheck>; canViewChannel(userId: string): Promise<AccessCheck>; }
+export interface GuildVisibility { isMember(userId: string): Promise<AccessCheck>; getMemberRoleIds?(userId: string): Promise<RoleAccessCheck>; refreshMemberRoleIds?(userId: string): Promise<RoleAccessCheck>; canViewChannel(userId: string): Promise<AccessCheck>; }
 export interface NotificationSender { send(mainUserId: string, content: string, nonce: string): Promise<void>; }
 export interface NotificationDisplayNames { guildName?: string; channelName?: string; }
 export type NotificationDisplayNameResolver = (guildId: string, channelId: string) => NotificationDisplayNames;
@@ -120,8 +120,17 @@ export class NotificationService {
         } else {
           try {
             const roleIds = await visibility.getMemberRoleIds(candidate.subUserId);
-            if (Array.isArray(roleIds)) roleMatch = roleIds.some((roleId) => mentionedRoleIds.includes(roleId));
-            else if (roleIds.kind === "retry") member = roleIds;
+            if (Array.isArray(roleIds)) {
+              roleMatch = roleIds.some((roleId) => mentionedRoleIds.includes(roleId));
+              if (!roleMatch && visibility.refreshMemberRoleIds) {
+                // A cached negative is not evidence of no role: this bot does not
+                // subscribe to Guild Members updates. Refresh only this case,
+                // once per candidate, before discarding a role-only mention.
+                const freshRoles = await visibility.refreshMemberRoleIds(candidate.subUserId);
+                if (Array.isArray(freshRoles)) roleMatch = freshRoles.some((roleId) => mentionedRoleIds.includes(roleId));
+                else member = freshRoles;
+              }
+            } else if (roleIds.kind === "retry") member = roleIds;
             else member = roleIds;
           } catch (error) { member = decisionFromError(error, "member"); }
         }

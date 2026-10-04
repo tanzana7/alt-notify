@@ -10,7 +10,7 @@
 - systemd: `alt-notify.service`
 - ログ: `journalctl -u alt-notify.service`
 - バックアップ: `altnoti-backup.timer`（毎日、最新7世代）
-- 外部監視: 任意のHealthchecks heartbeat（URL設定後のみ有効）
+- 外部監視: Healthchecks heartbeat（本番設定済み。成功pingと通知先を外部ダッシュボードで確認）
 
 BotはNode.js＋systemdで動作させる。1GB VMではDocker常駐のオーバーヘッドを避け、Nodeプロセスのメモリ上限をsystemdの`MemoryMax`で制御する。Windows版Botは本番稼働中に起動しない。
 
@@ -51,7 +51,13 @@ sudo -u altnoti /usr/bin/node --input-type=module -e 'import initSqlJs from "sql
 
 `ok`を確認し、DBの存在・非空・所有者・権限と停止原因を検証した後に限り、`sudo systemctl reset-failed alt-notify.service`、`sudo systemctl start alt-notify.service`を実行する。異常時は停止したまま調査する。
 
-復元は、サービス停止、対象DBを別名へ退避、検証済みバックアップを所定パスへ配置、存在・非空・整合性・所有者・権限確認、`reset-failed`、サービス起動、Gatewayと連携・queue確認の順で行う。削除や初期化はしない。オフホストバックアップは別途暗号化保存先を承認してから追加する。
+復元は、サービス停止、対象DBを別名へ退避、検証済みバックアップを所定パスへ配置、存在・非空・整合性・所有者・権限確認、`reset-failed`、サービス起動、Gatewayと連携・queue確認の順で行う。削除や初期化はしない。
+
+VM外バックアップにはWindows側の`deploy/pull-offsite-backup.ps1`を使う。SSH経由でOracle本番DBの整合性を確認し、日次backup serviceを実行、バックアップ整合性とSHA-256を確認してからWindowsへ取得する。Windows上でもハッシュとSQLite整合性を確認して成功扱いとし、ファイル名の日時で最新14世代を保持する。既定保存先は`%LOCALAPPDATA%\AltNotify\offsite-backups`で、OneDriveやGitの外に置く。保存先へのアクセスは現在ユーザーとSYSTEMに制限する。Oracle側の一時ステージは転送後に削除する。Windows PCが停止・未ログオンの間は実行されず、VM外の最新世代は更新されない。より強い災害復旧が必要なら別の保管先を検討する。
+
+定期実行は運営者が指定した日本時間の時刻に、Task Schedulerでdaily・ログオン環境・StartWhenAvailable相当を設定する。作成後、実際の1回の取得・ハッシュ一致・別DBとしての読み取りを確認するまではVM外バックアップを「有効」と判定しない。
+
+現在は毎日06:00 JSTに`AltNotifyOffsiteBackup`タスクを登録済み。Windows上で新規登録する場合は`deploy/install-offsite-task.ps1 -At "HH:mm"`を実行する。現在ユーザーのログオン中だけ走り、PC停止中の実行は次回利用可能時に開始する。バッテリー駆動中も実行可能に設定する。タスクの最終実行結果が失敗した場合は、VM外コピーが更新されていないものとして調査する。Windows PowerShell 5.1でも文字列を正しく読めるよう、実行するスクリプトはUTF-8 BOMで保存する。
 
 DBが欠落・空・破損した場合は、まずサービスを停止して原因と日次バックアップの整合性を調べる。**本番パスで新規DBを作らない。** 復元が必要なら上記の手順で検証済みバックアップから復元し、復元前後のmain/link件数とキュー状態を確認する。既存DBが見つかった場合も上書きせず、別名で保全してから判断する。
 

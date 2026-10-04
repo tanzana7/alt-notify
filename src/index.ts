@@ -9,11 +9,9 @@ import {
   GatewayIntentBits,
   MessageFlags,
   Partials,
-  PermissionFlagsBits,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
-  type GuildMember,
-  type Message
+  type GuildMember
 } from "discord.js";
 import { loadConfig } from "./config.js";
 import { SqliteDatabase } from "./db.js";
@@ -28,10 +26,11 @@ import { MemberCache } from "./services/member-cache.js";
 import { HealthcheckService } from "./services/healthcheck.js";
 import { isGatewayReady } from "./services/gateway-state.js";
 import { helpText } from "./help.js";
-import { classifyDiscordError } from "./services/discord-errors.js";
+import { createMessageVisibility } from "./services/message-visibility.js";
 import { authorizeQueuedNotification } from "./services/authorization.js";
 import { SingleFlight } from "./services/single-flight.js";
 import { UserFacingError, userMessageForError } from "./services/user-error.js";
+import { confirmAccountDeletion } from "./services/account-delete-button.js";
 
 const config = loadConfig();
 const logger = new Logger(config.LOG_LEVEL);
@@ -77,47 +76,6 @@ function privateReply(interaction: ChatInputCommandInteraction | ButtonInteracti
   const message = { content, ...(components ? { components } : {}) };
   if (interaction.replied || interaction.deferred) return interaction.editReply(message);
   return interaction.reply({ ...message, ...(interaction.inGuild() ? { flags: MessageFlags.Ephemeral } : {}) });
-}
-
-function memberAccess(message: Message) {
-  const guild = message.guild!;
-  const getMember = (userId: string): Promise<GuildMember | null> => memberCache.get(`${guild.id}:${userId}`, async () => {
-    try { return guild.members.cache.get(userId) ?? await guild.members.fetch(userId); }
-    catch (error) {
-      const failure = classifyDiscordError(error, "member");
-      if (failure.kind === "permanent") return null;
-      throw error;
-    }
-  });
-  return {
-    isMember: async (userId: string) => {
-      try { return Boolean(await getMember(userId)); }
-      catch (error) {
-        const failure = classifyDiscordError(error, "member");
-        return failure.kind === "temporary" ? { kind: "retry" as const, reason: failure.reason, ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}) } : { kind: "denied" as const, reason: failure.reason };
-      }
-    },
-    canViewChannel: async (userId: string) => {
-      try {
-        const member = await getMember(userId);
-        if (!member) return false;
-        const permissions = (message.channel as unknown as { permissionsFor: (member: GuildMember) => { has: (permission: bigint) => boolean } | null }).permissionsFor(member);
-        return Boolean(permissions?.has(PermissionFlagsBits.ViewChannel));
-      } catch (error) {
-        const failure = classifyDiscordError(error, "permission");
-        return failure.kind === "temporary" ? { kind: "retry" as const, reason: failure.reason, ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}) } : { kind: "denied" as const, reason: failure.reason };
-      }
-    },
-    getMemberRoleIds: async (userId: string) => {
-      try {
-        const member = await getMember(userId);
-        return member ? [...member.roles.cache.keys()] : { kind: "denied" as const, reason: "discord member not found" };
-      } catch (error) {
-        const failure = classifyDiscordError(error, "member");
-        return failure.kind === "temporary" ? { kind: "retry" as const, reason: failure.reason, ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}) } : { kind: "denied" as const, reason: failure.reason };
-      }
-    }
-  };
 }
 
 async function handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -227,10 +185,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.customId.startsWith("account-delete:")) {
     const token = interaction.customId.slice("account-delete:".length);
     try {
-      pendingDeletions.consume(token, interaction.user.id);
-      const result = accounts.deleteAccount(interaction.user.id);
-      await interaction.update({ content: result === "none" ? "削除するデータがありません。" : "保存されていたAlt Notifyのデータを削除しました。", components: [] });
-    } catch (error) { await privateReply(interaction, interactionError(error, "account delete")); }
+      await confirmAccountDeletion(interaction, token, pendingDeletions, accounts);
+    } catch (error) {
+      const content = interactionError(error, "account delete");
+      if (interaction.deferred) await interaction.editReply({ content, components: [] });
+      else await privateReply(interaction, content);
+    }
     return;
   }
   if (!interaction.customId.startsWith("link-approve:")) return;
@@ -249,7 +209,7 @@ client.on(Events.MessageCreate, async (message) => {
     const mentionedRoleIds = [...message.mentions.roles.keys()];
     const labels = new Map(mentionedUserIds.map((id) => [id, message.mentions.users.get(id)?.globalName ?? message.mentions.users.get(id)?.username ?? id]));
     if (!message.mentions.everyone && mentionedUserIds.length === 0 && mentionedRoleIds.length === 0) return;
-    await notifications.inspect({ id: message.id, guildId: message.guild.id, channelId: message.channelId, authorBot: message.author.bot, mentionedUserIds, mentionedRoleIds, mentionEveryone: message.mentions.everyone }, memberAccess(message), labels);
+    await notifications.inspect({ id: message.id, guildId: message.guild.id, channelId: message.channelId, authorBot: message.author.bot, mentionedUserIds, mentionedRoleIds, mentionEveryone: message.mentions.everyone }, createMessageVisibility(message, memberCache), labels);
   } catch (error) { logger.error("message inspection failed", { error: error instanceof Error ? error.message : "unknown" }); }
 });
 
