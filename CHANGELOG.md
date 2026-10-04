@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-beta.10 - 2026-10-05
+
+通知キューの停滞とVM外バックアップの未更新を既存のHealthchecksで検知。
+
+- 送信可能時刻を過ぎたpending/processing通知の滞留時間を監視し、everyoneの意図的な遅延や未来時刻のretryを異常扱いしない
+- Windows VM外バックアップの成功・失敗状態と最終成功時刻をOracleへ記録
+- バックアップ失敗または36時間以上の未更新を既存Healthchecks heartbeatへ統合し、次回成功時に自動復旧
+- Windows PC停止時もOracle側のstale監視でバックアップ未更新を検知
+
 ## 0.1.0-beta.9 - 2026-10-04
 
 通知・削除操作の競合とバックアップ情報の公開を改善。
