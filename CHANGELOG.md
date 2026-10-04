@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0-beta.8 - 2026-10-04
+
+公開拡大前の通知信頼性と運用準備を強化。
+
+- 古いGuildMemberキャッシュによるロールメンションの見落としを修正
+- アカウント削除ボタンのInteractionへDB処理前に応答するよう改善
+- 日次バックアップの最新7世代保持をファイル名の日時順へ修正
+- WindowsへのVM外バックアップを定期化し、ハッシュ・SQLite整合性を検証
+- 外部Healthchecksのheartbeat受信と通知先を確認
+- Bot Tokenを更新し、新しいGateway接続を確認
+- Wider beta向けの利用規模ソフト上限と再評価条件を文書化
+
 ## 0.1.0-beta.7 - 2026-10-04
 
 公開βの運用復旧・Gateway監視・Healthchecks安全性を強化。
