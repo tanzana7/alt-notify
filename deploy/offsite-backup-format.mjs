@@ -145,7 +145,12 @@ function powershell(operation, input, scriptPath) {
 
 function secureAcl(target, kind, aclScript) {
   const result = spawnSync(windowsPowerShellPath(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", aclScript, "-Path", target, "-Kind", kind], { encoding: "utf8", env: legacyPowerShellEnvironment(), windowsHide: true, timeout: 15_000, maxBuffer: 1024 * 1024 });
-  if (result.error || result.status !== 0) throw new Error("backup key ACL validation failed");
+  if (result.error || result.status !== 0) {
+    // Surface only a fixed diagnostic category; never echo ACL output, paths,
+    // account names, or DPAPI material into application/CI logs.
+    const diagnostic = String(result.stderr ?? "").match(/\bACL_[A-Z_]+\b/)?.[0];
+    throw new Error(diagnostic ? `backup key ACL validation failed (${diagnostic})` : "backup key ACL validation failed");
+  }
 }
 
 export function loadOrCreateDpapiKey({ keyDirectory = path.join(process.env.LOCALAPPDATA ?? "", "AltNotify", "keys"), protectorScript = path.join(path.dirname(fileURLToPath(import.meta.url)), "dpapi-key.ps1"), aclScript = path.join(path.dirname(fileURLToPath(import.meta.url)), "secure-offsite-key-acl.ps1") } = {}) {
