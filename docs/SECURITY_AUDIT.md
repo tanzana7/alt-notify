@@ -9,6 +9,8 @@
 
 2026-10-04の最終ハードニングで確認したロール判定のP1は、本番コード配置後の新Invocationで有効化した。外部Healthchecksの成功pingと通知先は運営者がダッシュボードで確認し、WindowsのVM外バックアップ定期タスクは06:00 JSTに登録して手動実行・ハッシュ一致・SQLite整合性を確認した。公開拡大の最終判定は全テストとrelease整合性確認後に行う。
 
+2026-10-05の運用整備では、Oracle/Windowsの実backupを隔離一時領域へ複製し、productionと同じ`requireExisting` DB openおよびservice初期化を通すrestore drillを実施した。両方でintegrity、必須table、件数確認に成功。OneDrive外のEd25519 SSH keyを登録し、sudoとWindows offsite backup taskの成功を確認後にOracleから旧公開鍵を失効し、旧鍵での接続拒否と新鍵での接続を確認した。OneDrive上の旧秘密鍵実体も削除した。Healthchecks endpointは安全な手動probeでHTTP 200。CI workflowを追加したが、GitHub上の実行成功を確認するまではbeta.11 release blockerとする。Privacy用の承認済み非公開窓口は未特定のため、公開Privacy同期とbeta.11 releaseも保留する。
+
 ## 指摘一覧
 
 | ID | 重大度 | 状態 | 内容と根拠 |

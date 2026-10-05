@@ -1,8 +1,8 @@
 # 外部監視・外部バックアップの比較
 
-調査日: 2026-09-22
+調査日: 2026-10-05
 
-今回は外部サービスのアカウント作成、課金、APIキー発行、DNS公開を行っていない。
+本番では既存のHealthchecks.io Hobbyist checkを利用中。今回、新しい外部サービス、課金、APIキー、公開endpointは追加していない。
 
 ## Oracle VM停止時の監視
 
@@ -10,14 +10,14 @@
 | --- | --- | --- | --- | --- |
 | OCI Monitoring + Notifications | OCIの制御プレーンからComputeメトリクス・アラームを評価 | Agentメトリクスまたは別途heartbeatが必要 | Always FreeにMonitoringの取り込み・取得枠、NotificationsのHTTPS通知と月1,000件のメール枠がある。IAM、Topic、メール購読の設定が必要 | 第一候補。Oracle内で完結するが、メトリクス欠損時のアラーム条件を実機で確認する |
 | UptimeRobot Free | 公開HTTP/port/pingを5分間隔で外部から確認 | `/healthz`等の公開エンドポイントが必要 | Freeは50監視、5分間隔、追加費用なし。公開ポートと外部アカウントが必要 | 導入は容易だが、Botに小さなHTTP health endpointを追加する必要がある |
-| Healthchecks.io Hobbyist | VM内timerのheartbeat停止を外部で検知 | systemd timerからのpingでBot/Gateway状態を検知 | Freeは20ジョブ。秘密URLの管理と外部アカウントが必要 | 公開ポート不要で最小構成。ただし外部サービス追加の承認が必要 |
+| Healthchecks.io Hobbyist（本番採用） | VM停止時にheartbeat期限切れを外部通知 | Botが全Shard Gateway Ready時のみ送信し、queue count/age、失敗、offsite鮮度が閾値超過ならfail | 既存checkを使用。秘密URLをOracle環境ファイルで管理 | 公開ポート不要。手動probe HTTP 200、ダッシュボードUpと通知先を確認済み |
 | 同一VM内の監視 | VM停止時は検知不能 | process/systemdのみ | 追加費用なし | VM障害対策には不十分 |
 
 ### 推奨
 
-第一段階はOCI Monitoring + Notificationsを手動設定する。既存のOracle契約内で完結し、Computeメトリクスとメール通知を使えるため、外部SaaSを増やさずにVMレベルを監視できる。Compute Instance Monitoring pluginの有効化、Alarm、Notifications Topic、メール購読確認が必要で、メール購読は確認リンクの承認が必要。
+Healthchecks.ioを本番運用中。VM停止、Gateway未Ready、queue backlog/failure/age、offsite backupのstaleを1つの外部checkで検知する。OCI Monitoring + Notificationsは代替・補完候補だが今回は追加構成していない。
 
-Botレベルまで確実に監視する場合の第二段階はHealthchecks.ioで、`alt-notify.service`のsystemd timerがGateway readyを確認してheartbeat URLを叩く構成とする。URL自体が秘密情報になるため、`/etc/altnoti.env`へ保存しログへ出さない。外部サービスの利用承認後に実装する。
+`alt-notify.service`のheartbeat処理はGateway全Shard Readyを確認し、正常時だけ成功pingを送る。URL自体が秘密情報のため、`/etc/altnoti.env`に保存しログへ出さない。endpoint疎通の手動probeはURLやHTTP本文を表示せず結果分類だけを返す。
 
 UptimeRobotは公開HTTP endpointを必要とするため、Gateway Botだけの現在構成にはHealthchecksより変更量が大きい。
 

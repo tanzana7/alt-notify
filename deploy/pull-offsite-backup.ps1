@@ -42,7 +42,22 @@ try {
   $failureCode = "final_save_failed"
   if (Test-Path -LiteralPath $finalPath) { throw "同名のバックアップが既に存在します" }
   Move-Item -LiteralPath $temporaryPath -Destination $finalPath
-  $backups = Get-ChildItem -LiteralPath $Destination -File | Where-Object { $_.Name -match '^discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite$' } | Sort-Object Name -Descending
+  $failureCode = "retention_cleanup_failed"
+  $cutoff = [DateTime]::UtcNow.AddDays(-30)
+  $backupCandidates = Get-ChildItem -LiteralPath $Destination -File | Where-Object { $_.Name -match '^discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite$' } | Sort-Object Name -Descending
+  $backups = @($backupCandidates | Where-Object {
+    $stamp = [DateTime]::MinValue
+    $validStamp = [DateTime]::TryParseExact($_.Name.Substring(19, 15), 'yyyyMMdd-HHmmss', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$stamp)
+    $validStamp
+  })
+  $backups | ForEach-Object {
+    $stamp = [DateTime]::ParseExact($_.Name.Substring(19, 15), 'yyyyMMdd-HHmmss', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal)
+    if ($stamp.ToUniversalTime() -lt $cutoff) { Remove-Item -LiteralPath $_.FullName -Force }
+  }
+  $backups = @($backupCandidates | Where-Object {
+    $stamp = [DateTime]::MinValue
+    [DateTime]::TryParseExact($_.Name.Substring(19, 15), 'yyyyMMdd-HHmmss', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$stamp) -and $stamp.ToUniversalTime() -ge $cutoff
+  })
   $backups | Select-Object -Skip 14 | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
   # Only the completely verified and saved Windows copy can advance success.
   $failureCode = "status_update_failed"

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0-beta.11 - 2026-10-05
+
+公開βの長期運用に向けて、保持期間・復旧手順・拡大ゲートを明確化。
+
+- Privacy/Termsのアカウントデータ、通知履歴、連携コード、backup保持方針を具体化
+- Oracle backupを最新7世代かつ14日以内、Windows offsite backupを最新14世代かつ30日以内に整理
+- production `requireExisting`経路を再利用する隔離restore drillとRPO/RTO運用目標を追加
+- LONG_TERM_OPERATIONSをHealthchecks、queue age/failure、VM外backupの稼働実態へ同期
+- Oracle管理SSH鍵をOneDrive外のWindows OpenSSH領域へ移行し、旧鍵を失効
+- Node 24のLinux/Windows GitHub Actions CIを追加
+- 75 GuildでVerification準備、90 Guildで新規導入を停止する運用ゲートを追加
+
 ## 0.1.0-beta.10 - 2026-10-05
 
 通知キューの停滞とVM外バックアップの未更新を既存のHealthchecksで検知。

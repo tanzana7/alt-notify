@@ -9,10 +9,13 @@
 - 環境ファイル: `/etc/altnoti.env`（root所有、`640`）
 - systemd: `alt-notify.service`
 - ログ: `journalctl -u alt-notify.service`
-- バックアップ: `altnoti-backup.timer`（毎日、最新7世代）
+- バックアップ: `altnoti-backup.timer`（毎日、最新7世代かつ14日以内）
 - 外部監視: Healthchecks heartbeat（本番設定済み。成功pingと通知先を外部ダッシュボードで確認）
+- Windows管理SSH鍵: `%USERPROFILE%\.ssh\alt-notify-oracle-ed25519`（Ed25519、現在ユーザーとSYSTEMのみ読み取り。旧OneDrive鍵はOracleで失効し、ローカル実体を削除）
 
 HealthchecksはGateway全Shard Ready、pending/processing件数、直近15分のfailed件数に加え、送信可能時刻`available_at`を過ぎたキューの最古滞留時間（既定5分）を判定する。everyoneの60秒遅延や未来のretry予定は滞留に数えない。Windows VM外バックアップはroot管理の`/var/lib/altnoti-monitoring/offsite-backup-status.json`に成功・失敗と最終成功時刻のみを記録する。`alt-notify.service`は読み取り専用で、ユーザーID・Windowsパス・秘密値は記録しない。明示失敗または最終成功から既定36時間以上で既存Healthchecksへ`/fail`を送り、次の成功で自動復帰する。Windows PC停止・未ログオン中はTask Schedulerが走らないため、このstale判定で検知する。
+
+Oracle backupは最新7世代かつ14日以内、Windows offsite backupは最新14世代かつ30日以内を保持する。保持削除は次回正常なbackup実行時に行われ、Windows PC停止・未ログオン中は期限超過分が次回成功まで残り得る。systemd journalは`/etc/systemd/journald.conf.d/altnoti.conf`の`MaxRetentionSec=30day`でVM全体30日上限とする。
 
 BotはNode.js＋systemdで動作させる。1GB VMではDocker常駐のオーバーヘッドを避け、Nodeプロセスのメモリ上限をsystemdの`MemoryMax`で制御する。Windows版Botは本番稼働中に起動しない。
 
@@ -55,9 +58,18 @@ sudo -u altnoti /usr/bin/node --input-type=module -e 'import initSqlJs from "sql
 
 復元は、サービス停止、対象DBを別名へ退避、検証済みバックアップを所定パスへ配置、存在・非空・整合性・所有者・権限確認、`reset-failed`、サービス起動、Gatewayと連携・queue確認の順で行う。削除や初期化はしない。
 
-VM外バックアップにはWindows側の`deploy/pull-offsite-backup.ps1`を使う。SSH経由でOracle本番DBの整合性を確認し、日次backup serviceを実行、バックアップ整合性とSHA-256を確認してからWindowsへ取得する。Windows上でもハッシュとSQLite整合性を確認して成功扱いとし、ファイル名の日時で最新14世代を保持する。既定保存先は`%LOCALAPPDATA%\AltNotify\offsite-backups`で、OneDriveやGitの外に置く。保存先へのアクセスは現在ユーザーとSYSTEMに制限する。Oracle側の一時ステージは転送後に削除する。Windows PCが停止・未ログオンの間は実行されず、VM外の最新世代は更新されない。より強い災害復旧が必要なら別の保管先を検討する。
+VM外バックアップにはWindows側の`deploy/pull-offsite-backup.ps1`を使う。SSH経由でOracle本番DBの整合性を確認し、日次backup serviceを実行、バックアップ整合性とSHA-256を確認してからWindowsへ取得する。Windows上でもハッシュとSQLite整合性を確認して成功扱いとし、ファイル名のUTC日時で最新14世代かつ30日以内を保持する。既定保存先は`%LOCALAPPDATA%\AltNotify\offsite-backups`で、OneDriveやGitの外に置く。保存先へのアクセスは現在ユーザーとSYSTEMに制限する。Oracle側の一時ステージは転送後に削除する。Windows PCが停止・未ログオンの間は実行されず、期限超過分の削除とVM外最新世代の更新は次回正常実行まで遅れる。
+
+## 復旧目標とrestore drill
+
+- RPO運用目標：Oracle日次backupが成功している場合は最大24時間。Windows VM外backupは毎日06:00 JSTを目標とし、36時間更新されない場合はHealthchecks異常として扱う。
+- RTO運用目標：復元作業開始からサービス確認まで60分以内。SLAではなく内部運用目標。
+- backup確認は`node deploy/verify-restore.mjs <backup-path> oracle`または`windows`を使用する。必ず最新の`dist`をbuildした上で、スクリプトが作る隔離一時コピーだけを開く。live DBへ復元せず、Gateway/DMは起動しない。出力は整合性、DB open、service initialization、件数、経過時間のみ。
+- 復元所要時間は`docs/RESTORE_DRILL.md`に個人データを含めず記録する。
 
 定期実行は運営者が指定した日本時間の時刻に、Task Schedulerでdaily・ログオン環境・StartWhenAvailable相当を設定する。作成後、実際の1回の取得・ハッシュ一致・別DBとしての読み取りを確認するまではVM外バックアップを「有効」と判定しない。
+
+SSH鍵の解決は`deploy/resolve-oracle-key.ps1`が上記OneDrive外の固定パスだけを使う。別鍵へrotationするときは新公開鍵登録、新鍵SSH/sudo確認、offsite backup成功、旧公開鍵の個別失効、旧鍵拒否、新鍵再確認の順に行う。鍵内容をログ・Issueへ貼らない。
 
 現在は毎日06:00 JSTに`AltNotifyOffsiteBackup`タスクを登録済み。Windows上で新規登録する場合は`deploy/install-offsite-task.ps1 -At "HH:mm"`を実行する。現在ユーザーのログオン中だけ走り、PC停止中の実行は次回利用可能時に開始する。バッテリー駆動中も実行可能に設定する。タスクの最終実行結果が失敗した場合は、VM外コピーが更新されていないものとして調査する。Windows PowerShell 5.1でも文字列を正しく読めるよう、実行するスクリプトはUTF-8 BOMで保存する。
 

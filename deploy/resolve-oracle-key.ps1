@@ -1,4 +1,4 @@
-﻿param([string]$KeyPath)
+﻿param([string]$KeyPath, [string]$ProfilePath = $env:USERPROFILE)
 
 $ErrorActionPreference = "Stop"
 if ($PSBoundParameters.ContainsKey("KeyPath")) {
@@ -6,13 +6,10 @@ if ($PSBoundParameters.ContainsKey("KeyPath")) {
   return (Resolve-Path -LiteralPath $KeyPath).Path
 }
 
-# Known Folderに任せることで、OneDriveや日本語名へのDesktop移動にも追従する。
-$desktop = [Environment]::GetFolderPath("Desktop")
-$downloads = Join-Path ([Environment]::GetFolderPath("UserProfile")) "Downloads"
+# unattended backup uses one explicit key outside OneDrive; do not fall back to
+# a stale downloaded key after rotation because that would hide revocation.
 $candidates = @(
-  (Join-Path $desktop "oraclessh-key-2026-09-21.key"),
-  (Join-Path $downloads "oraclessh-key-2026-09-21.key"),
-  (Join-Path $downloads "ssh-key-2026-09-21.key")
+  (Join-Path $ProfilePath ".ssh\alt-notify-oracle-ed25519")
 )
 foreach ($candidate in $candidates) {
   if (Test-Path -LiteralPath $candidate -PathType Leaf) { return (Resolve-Path -LiteralPath $candidate).Path }

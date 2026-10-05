@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("success", "transfer_failure", "hash_mismatch", "sqlite_invalid", "failure_ssh_down")]
+  [ValidateSet("success", "transfer_failure", "hash_mismatch", "sqlite_invalid", "failure_ssh_down", "retention_cleanup_failure")]
   [string]$Scenario,
   [string]$FixtureDirectory
 )
@@ -24,6 +24,13 @@ $global:successMarks = 0
 $global:failureMarks = @()
 $global:verifierCalls = 0
 $global:earlySuccessMark = $false
+New-Item -ItemType Directory -Path $destination -Force | Out-Null
+[IO.File]::WriteAllText((Join-Path $destination "discord-alt-notify-20200101-000000.sqlite"), "expired fixture")
+[IO.File]::WriteAllText((Join-Path $destination "discord-alt-notify-20261399-999999.sqlite"), "malformed fixture")
+for ($age = 1; $age -le 16; $age++) {
+  $stamp = [DateTime]::UtcNow.AddDays(-$age).ToString('yyyyMMdd-HHmmss', [Globalization.CultureInfo]::InvariantCulture)
+  [IO.File]::WriteAllText((Join-Path $destination "discord-alt-notify-$stamp.sqlite"), "generation fixture")
+}
 
 function ssh {
   $remoteCommand = [string]$args[-1]
@@ -56,6 +63,12 @@ function node {
   $global:LASTEXITCODE = if ($Scenario -eq "sqlite_invalid") { 1 } else { 0 }
 }
 
+function Remove-Item {
+  param([string]$LiteralPath, [switch]$Force)
+  if ($Scenario -eq "retention_cleanup_failure" -and $LiteralPath -like "*20200101-000000.sqlite") { throw "fixture cleanup failure" }
+  Microsoft.PowerShell.Management\Remove-Item -LiteralPath $LiteralPath -Force:$Force
+}
+
 $succeeded = $true
 $message = $null
 try { & "$PSScriptRoot/../deploy/pull-offsite-backup.ps1" -KeyPath $key -Destination $destination > $null }
@@ -69,5 +82,8 @@ catch { $succeeded = $false; $message = $_.Exception.Message }
   verifierCalls = $global:verifierCalls
   earlySuccessMark = $global:earlySuccessMark
   finalExists = Test-Path -LiteralPath (Join-Path $destination $name)
+  expiredExists = Test-Path -LiteralPath (Join-Path $destination "discord-alt-notify-20200101-000000.sqlite")
+  malformedExists = Test-Path -LiteralPath (Join-Path $destination "discord-alt-notify-20261399-999999.sqlite")
+  retainedCount = @(Get-ChildItem -LiteralPath $destination -File | Where-Object { $_.Name -match '^discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite$' -and $_.Name -ne "discord-alt-notify-20261399-999999.sqlite" }).Count
 } | ConvertTo-Json -Compress
 if (-not $succeeded) { exit 1 }

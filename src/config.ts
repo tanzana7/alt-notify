@@ -19,7 +19,12 @@ const envSchema = z.object({
   HEALTHCHECKS_MAX_FAILURES_15M: z.coerce.number().int().min(1).max(10_000).default(5),
   HEALTHCHECKS_MAX_QUEUE_AGE_MS: z.coerce.number().int().min(30_000).max(86_400_000).default(300_000),
   HEALTHCHECKS_MAX_OFFSITE_BACKUP_AGE_MS: z.coerce.number().int().min(3_600_000).max(30 * 86_400_000).default(129_600_000),
-  HEALTHCHECKS_OFFSITE_STATUS_PATH: z.string().min(1).default("/var/lib/altnoti-monitoring/offsite-backup-status.json")
+  HEALTHCHECKS_OFFSITE_STATUS_PATH: z.string().min(1).default("/var/lib/altnoti-monitoring/offsite-backup-status.json"),
+  GUILD_VERIFICATION_PREP_THRESHOLD: z.coerce.number().int().min(1).max(99).default(75),
+  GUILD_HARD_LIMIT: z.coerce.number().int().min(2).max(100).default(90)
+}).refine((config) => config.GUILD_VERIFICATION_PREP_THRESHOLD < config.GUILD_HARD_LIMIT, {
+  message: "GUILD_VERIFICATION_PREP_THRESHOLD must be lower than GUILD_HARD_LIMIT",
+  path: ["GUILD_VERIFICATION_PREP_THRESHOLD"]
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

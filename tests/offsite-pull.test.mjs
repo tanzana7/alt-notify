@@ -17,7 +17,7 @@ const run = (scenario) => {
 describe.skipIf(process.platform !== "win32")("Windows offsite pull status markers", () => {
   it("marks success only after the verified copy is saved", () => {
     const result = run("success");
-    expect(result).toMatchObject({ status: 0, output: { succeeded: true, successMarks: 1, failureMarks: [], verifierCalls: 1, earlySuccessMark: false, finalExists: true } });
+    expect(result).toMatchObject({ status: 0, output: { succeeded: true, successMarks: 1, failureMarks: [], verifierCalls: 1, earlySuccessMark: false, finalExists: true, expiredExists: false, malformedExists: true, retainedCount: 14 } });
   });
 
   it.each([
@@ -29,5 +29,10 @@ describe.skipIf(process.platform !== "win32")("Windows offsite pull status marke
     const result = run(scenario);
     expect(result).toMatchObject({ status: 1, output: { succeeded: false, successMarks: 0, failureMarks: [code], finalExists: false } });
     expect(result.output.message).toBeTruthy();
+  });
+
+  it("records retention cleanup failure and never deletes malformed timestamp files", () => {
+    const result = run("retention_cleanup_failure");
+    expect(result).toMatchObject({ status: 1, output: { succeeded: false, successMarks: 0, failureMarks: ["retention_cleanup_failed"], finalExists: true, expiredExists: true, malformedExists: true } });
   });
 });

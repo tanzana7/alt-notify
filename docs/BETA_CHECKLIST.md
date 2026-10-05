@@ -5,8 +5,10 @@
 - [ ] `FREE_LINK_LIMIT=1` を確認
 - [ ] Bot招待URLと必要権限を確認
 - [ ] `/help`、`/status`、`/watch status` の表示を確認
-- [ ] バックアップ成功履歴、保存世代、復元試験を確認
-- [ ] Windows版Botが停止し、Oracle版だけが稼働していることを確認
+- [x] Oracle/Windows backupの成功履歴と保存世代を確認し、隔離restore drillを完了（[記録](RESTORE_DRILL.md)）
+- [x] 75 GuildでVerification準備、90 Guildで新規導入停止するゲートと既存Guild保持を確認
+- [ ] Privacy用の承認済み非公開問い合わせ先を確定し、Privacy/TermsをCloudflare Pagesへ同期
+- [x] Windows版Botが停止し、Oracle版だけが稼働していることを確認
 
 ## 利用状況（本文を収集しない）
 

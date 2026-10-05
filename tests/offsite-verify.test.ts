@@ -14,6 +14,13 @@ describe("offsite restore-candidate verification", () => {
     expect(fs.readFileSync(path.resolve("deploy/install-offsite-task.ps1"), "utf8")).toContain("-AllowStartIfOnBatteries");
   });
 
+  it.skipIf(process.platform !== "win32")("prefers the OneDrive-independent SSH key path", () => {
+    const powershell = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-File", path.resolve("tests/ssh-resolver.ps1")], { encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("PASS SSH key resolver priority");
+  });
+
   it("accepts a complete SQLite backup and rejects damaged or incomplete copies", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "altnotify-offsite-"));
     try {

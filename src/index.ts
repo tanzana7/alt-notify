@@ -33,6 +33,7 @@ import { UserFacingError, userMessageForError } from "./services/user-error.js";
 import { confirmAccountDeletion } from "./services/account-delete-button.js";
 import { cancelAccountDeletion } from "./services/account-delete-button.js";
 import { createDiscordNotificationSender } from "./services/discord-notification-sender.js";
+import { getGuildGateState, shouldLeaveNewGuild } from "./services/guild-gate.js";
 
 const config = loadConfig();
 const logger = new Logger(config.LOG_LEVEL);
@@ -157,18 +158,40 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
     }
     if (interaction.commandName === "admin-stats") {
       if (!canUseAdminStats(interaction.user.id, config.OWNER_DISCORD_ID)) { await privateReply(interaction, "権限がありません"); return; }
-      const stats = getStats(db, isGatewayReady(client), client.guilds.cache.size);
-      await privateReply(interaction, `導入サーバー数：${stats.guilds}\nメイン登録数：${stats.mainAccounts}\n連携済みアカウント数：${stats.linkedAccounts}\n本日の通知送信数：${stats.notificationsSentToday}\n送信失敗数：${stats.notificationFailures}\n送信待ち：${stats.pendingQueue}\nGateway：${stats.gatewayReady ? "接続" : "未接続"}`);
+      const stats = getStats(db, isGatewayReady(client), client.guilds.cache.size, Date.now(), config.GUILD_VERIFICATION_PREP_THRESHOLD, config.GUILD_HARD_LIMIT);
+      await privateReply(interaction, `導入サーバー数：${stats.guilds}\nVerification準備開始：${stats.prepThreshold}\n新規導入停止：${stats.hardLimit}\nゲート状態：${stats.verificationState}\nメイン登録数：${stats.mainAccounts}\n連携済みアカウント数：${stats.linkedAccounts}\n本日の通知送信数：${stats.notificationsSentToday}\n送信失敗数：${stats.notificationFailures}\n送信待ち：${stats.pendingQueue}\nGateway：${stats.gatewayReady ? "接続" : "未接続"}`);
     }
   } catch (error) {
     await privateReply(interaction, interactionError(error, interaction.commandName)).catch(() => undefined);
   }
 }
 
+let startupGuildIds = new Set<string>();
+let initialReadyHandled = false;
 client.once(Events.ClientReady, (ready) => {
   const gatewayReady = isGatewayReady(client);
   logger.info("gateway ready", { guilds: ready.guilds.cache.size, shardCount: client.ws.shards.size, allShardsReady: gatewayReady });
+  startupGuildIds = new Set(ready.guilds.cache.keys());
+  initialReadyHandled = true;
+  const gate = getGuildGateState(ready.guilds.cache.size, config.GUILD_VERIFICATION_PREP_THRESHOLD, config.GUILD_HARD_LIMIT);
+  if (gate === "verification_prep") logger.warn("guild verification preparation threshold reached", { guilds: ready.guilds.cache.size, threshold: config.GUILD_VERIFICATION_PREP_THRESHOLD, hardLimit: config.GUILD_HARD_LIMIT });
+  if (ready.guilds.cache.size === config.GUILD_HARD_LIMIT) logger.warn("guild hard limit reached at startup; existing guilds retained", { guilds: ready.guilds.cache.size, hardLimit: config.GUILD_HARD_LIMIT });
+  if (ready.guilds.cache.size > config.GUILD_HARD_LIMIT) logger.error("guild hard limit exceeded at startup; existing guilds retained", { guilds: ready.guilds.cache.size, hardLimit: config.GUILD_HARD_LIMIT });
   void healthchecks.check(gatewayReady);
+});
+client.on(Events.GuildCreate, (guild) => {
+  if (!initialReadyHandled || startupGuildIds.has(guild.id)) return;
+  const guildCount = client.guilds.cache.size;
+  const gate = getGuildGateState(guildCount, config.GUILD_VERIFICATION_PREP_THRESHOLD, config.GUILD_HARD_LIMIT);
+  if (guildCount === config.GUILD_VERIFICATION_PREP_THRESHOLD) {
+    logger.warn("guild verification preparation threshold reached", { guilds: guildCount, threshold: config.GUILD_VERIFICATION_PREP_THRESHOLD, hardLimit: config.GUILD_HARD_LIMIT });
+  }
+  if (shouldLeaveNewGuild({ guildId: guild.id, currentGuildCount: guildCount, hardLimit: config.GUILD_HARD_LIMIT, startupGuildIds })) {
+    logger.warn("new guild rejected above hard limit", { guilds: guildCount, hardLimit: config.GUILD_HARD_LIMIT });
+    void guild.leave().catch((error: unknown) => logger.error("new guild rejection failed", { errorName: error instanceof Error ? error.name : "unknown", guilds: guildCount, hardLimit: config.GUILD_HARD_LIMIT }));
+  } else if (gate === "expansion_stopped") {
+    logger.warn("guild hard limit reached; new guilds will be rejected", { guilds: guildCount, hardLimit: config.GUILD_HARD_LIMIT });
+  }
 });
 function logGatewayConnected(shardId: number): void {
   // A single shard recovering is not enough to validate the whole Gateway.

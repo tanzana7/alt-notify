@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 export const OFFSITE_STATUS_DIRECTORY = "/var/lib/altnoti-monitoring";
 export const OFFSITE_STATUS_FILENAME = "offsite-backup-status.json";
-export const FAILURE_CODES = new Set(["prepare_failed", "transfer_failed", "hash_mismatch", "sqlite_invalid", "final_save_failed", "status_update_failed"]);
+export const FAILURE_CODES = new Set(["prepare_failed", "transfer_failed", "hash_mismatch", "sqlite_invalid", "final_save_failed", "retention_cleanup_failed", "status_update_failed"]);
 
 function statusPath(directory) { return path.join(directory, OFFSITE_STATUS_FILENAME); }
 

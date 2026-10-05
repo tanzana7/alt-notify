@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Node 24 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
+      - name: Bash syntax and diff checks
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            for script in deploy/*.sh; do bash -n "$script"; done
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            git diff --check "$BASE_SHA...$GITHUB_SHA"
+          elif [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            git diff --check "$GITHUB_SHA^...$GITHUB_SHA"
+          else
+            git diff --check
+          fi
+      - name: Validate PowerShell entrypoints
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $paths = @('deploy/pull-offsite-backup.ps1', 'deploy/resolve-oracle-key.ps1', 'deploy/install-offsite-task.ps1', 'tests/ssh-resolver.ps1')
+          $bomPaths = @('deploy/pull-offsite-backup.ps1', 'deploy/resolve-oracle-key.ps1', 'deploy/install-offsite-task.ps1')
+          foreach ($path in $paths) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $path), [ref]$tokens, [ref]$errors) > $null
+            if ($errors.Count -gt 0) { throw "PowerShell parser failed: $path" }
+            if ($bomPaths -contains $path) {
+              $bytes = [IO.File]::ReadAllBytes((Join-Path $PWD $path))
+              if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) { throw "UTF-8 BOM missing: $path" }
+            }
+          }
