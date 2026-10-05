@@ -148,7 +148,7 @@ function secureAcl(target, kind, aclScript) {
   if (result.error || result.status !== 0) {
     // Surface only a fixed diagnostic category; never echo ACL output, paths,
     // account names, or DPAPI material into application/CI logs.
-    const diagnostic = String(result.stderr ?? "").match(/\bACL_[A-Z_]+\b/)?.[0];
+    const diagnostic = String(result.stderr ?? "").match(/\bACL_[A-Z0-9_]+\b/)?.[0];
     throw new Error(diagnostic ? `backup key ACL validation failed (${diagnostic})` : "backup key ACL validation failed");
   }
 }

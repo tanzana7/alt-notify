@@ -26,6 +26,6 @@ foreach ($line in $aclOutput) {
 }
 $expectedRights = if ($Kind -eq 'Directory') { '(OI)(CI)(F)' } else { '(F)' }
 $expected = @($ownerName, $systemName)
-if ($rules.Count -ne 2) { throw 'ACL_RULE_COUNT' }
+if ($rules.Count -ne 2) { throw "ACL_${($Kind.ToUpperInvariant())}_RULE_COUNT_$($rules.Count)" }
 if (@($rules | Where-Object { $_.Identity -notin $expected -or $_.Rights -ne $expectedRights }).Count -ne 0) { throw 'ACL_RULE_MISMATCH' }
 if (@($rules | Select-Object -ExpandProperty Identity -Unique).Count -ne 2) { throw 'ACL_DUPLICATE_PRINCIPAL' }
