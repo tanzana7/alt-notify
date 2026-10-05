@@ -25,5 +25,5 @@ export function helpText(appName: string): string {
 ・メッセージ本文
 
 【設定】
-/watch off /watch on /watch status /status /unlink /account delete`;
+/watch off /watch on /watch status /status /unlink /account refresh /account delete`;
 }

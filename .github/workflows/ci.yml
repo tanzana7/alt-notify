@@ -54,8 +54,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $paths = @('deploy/pull-offsite-backup.ps1', 'deploy/resolve-oracle-key.ps1', 'deploy/install-offsite-task.ps1', 'tests/ssh-resolver.ps1')
-          $bomPaths = @('deploy/pull-offsite-backup.ps1', 'deploy/resolve-oracle-key.ps1', 'deploy/install-offsite-task.ps1')
+          $paths = @('deploy/pull-offsite-backup.ps1', 'deploy/resolve-oracle-key.ps1', 'deploy/install-offsite-task.ps1', 'deploy/dpapi-key.ps1', 'deploy/secure-offsite-key-acl.ps1', 'tests/ssh-resolver.ps1')
+          $bomPaths = @('deploy/resolve-oracle-key.ps1', 'deploy/install-offsite-task.ps1')
           foreach ($path in $paths) {
             $tokens = $null
             $errors = $null

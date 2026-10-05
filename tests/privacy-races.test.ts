@@ -8,6 +8,7 @@ import { Logger } from "../src/logger.js";
 import { NotificationService } from "../src/services/notifications.js";
 import { WatchService } from "../src/services/watches.js";
 import { createDiscordNotificationSender } from "../src/services/discord-notification-sender.js";
+import { PrivacyDeletionService } from "../src/services/privacy-deletion.js";
 
 const resources: Array<{ db: SqliteDatabase; dir: string }> = [];
 
@@ -191,6 +192,19 @@ describe("local revalidation before notification delivery", () => {
     const draining = state.notifications.drain({ send: async () => { sends++; if (sends === 1) { started.resolve(); await failFirst.promise; throw { status: 503 }; } } }, 1_000);
     await started.promise; expect(state.accounts.unlink("sub")).toBe(1); failFirst.resolve(); await draining;
     expect(sends).toBe(1); expect(state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='retry-unlink'").get()?.status).toBe("cancelled");
+  });
+});
+
+describe("privacy deletion write barrier", () => {
+  it("blocks a delayed watch update while deletion backup maintenance is in flight", async () => {
+    const state = await setup(); await link(state.accounts, "sub");
+    const barrier = deferred<void>();
+    const deletion = new PrivacyDeletionService(state.accounts, { begin: () => barrier.promise, databaseDeleted: async () => undefined, finish: async () => undefined });
+    const removing = deletion.deleteAccount("sub");
+    await expect(state.watches.set("guild", "sub", true, { isMember: async () => true })).rejects.toThrow("削除処理中");
+    barrier.resolve(undefined);
+    await expect(removing).resolves.toBe("sub");
+    expect(state.db.raw.prepare("SELECT 1 FROM guild_watches WHERE sub_user_id='sub'").get()).toBeUndefined();
   });
 });
 

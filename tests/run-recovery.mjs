@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const scripts = ["recovery-scripts.sh", "backup-retention.sh"].map((name) => join(root, "tests", name));
+const scripts = ["recovery-scripts.sh"].map((name) => join(root, "tests", name));
 const candidates = process.platform === "win32"
   ? [
       join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe"),

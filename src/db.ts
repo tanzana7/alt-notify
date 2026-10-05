@@ -57,9 +57,10 @@ class SqliteFacade {
 export class SqliteDatabase {
   public readonly raw: SqliteFacade;
 
-  private constructor(filePath: string, database: SqlJsDatabase) {
-    fs.mkdirSync(path.dirname(path.resolve(filePath)), { recursive: true });
+  private constructor(filePath: string, database: SqlJsDatabase, persistToFile = true) {
+    if (persistToFile) fs.mkdirSync(path.dirname(path.resolve(filePath)), { recursive: true });
     this.raw = new SqliteFacade(database, () => {
+      if (!persistToFile) return;
       const bytes = database.export();
       // sql.js exports the complete database. Rename a sibling temporary file
       // so a process crash cannot leave a half-written SQLite file.
@@ -72,10 +73,7 @@ export class SqliteDatabase {
   }
 
   public static async open(filePath: string, options: { requireExisting?: boolean } = {}): Promise<SqliteDatabase> {
-    const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-    const candidates = [path.join(moduleDir, "..", "node_modules", "sql.js", "dist"), path.join(moduleDir, "..", "..", "node_modules", "sql.js", "dist")];
-    const wasmDir = candidates.find((candidate) => fs.existsSync(path.join(candidate, "sql-wasm.wasm"))) ?? candidates[0]!;
-    const SQL = await initSqlJs({ locateFile: (file) => path.join(wasmDir, file) });
+    const SQL = await loadSqlJs();
     if (!options.requireExisting) {
       const bytes = fs.existsSync(filePath) ? new Uint8Array(fs.readFileSync(filePath)) : undefined;
       return new SqliteDatabase(filePath, new SQL.Database(bytes));
@@ -101,6 +99,25 @@ export class SqliteDatabase {
     } finally {
       database?.close();
     }
+  }
+
+  /** Opens verified backup bytes in memory, so restore drills never write decrypted DBs to disk. */
+  public static async openBuffer(bytes: Uint8Array): Promise<SqliteDatabase> {
+    if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) throw new Error("backup is empty");
+    const SQL = await loadSqlJs();
+    let database: SqlJsDatabase | undefined;
+    try {
+      database = new SQL.Database(bytes);
+      const integrity = database.exec("PRAGMA integrity_check");
+      if (integrity.length !== 1 || integrity[0]?.values.length !== 1 || integrity[0].values[0]?.[0] !== "ok") throw new Error("backup integrity failed");
+      const tables = database.exec("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('main_accounts', 'account_links', 'notification_queue')");
+      if (tables[0]?.values.length !== 3) throw new Error("backup schema invalid");
+      const existing = database;
+      database = undefined;
+      return new SqliteDatabase("memory:restore-drill", existing, false);
+    } catch {
+      throw new Error("Backup database validation failed");
+    } finally { database?.close(); }
   }
 
   public close(): void { this.raw.close(); }
@@ -153,4 +170,11 @@ export class SqliteDatabase {
     this.raw.prepare("DELETE FROM notification_queue WHERE status IN ('sent', 'failed', 'cancelled') AND created_at < ?").run(now - 7 * 24 * 60 * 60 * 1000);
     if (recoverProcessing) this.raw.prepare("UPDATE notification_queue SET status = 'pending' WHERE status = 'processing'").run();
   }
+}
+
+async function loadSqlJs() {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [path.join(moduleDir, "..", "node_modules", "sql.js", "dist"), path.join(moduleDir, "..", "..", "node_modules", "sql.js", "dist")];
+  const wasmDir = candidates.find((candidate) => fs.existsSync(path.join(candidate, "sql-wasm.wasm"))) ?? candidates[0]!;
+  return initSqlJs({ locateFile: (file) => path.join(wasmDir, file) });
 }

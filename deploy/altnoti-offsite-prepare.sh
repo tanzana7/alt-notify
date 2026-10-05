@@ -4,26 +4,12 @@ set -euo pipefail
 backup_dir=/var/lib/altnoti/backups
 db_path=/var/lib/altnoti/discord-alt-notify.sqlite
 staging_dir=/home/ubuntu/.altnoti-offsite-staging
+privacy_helper=/usr/local/lib/altnoti/privacy-deletion-state.mjs
 status_helper=/usr/local/lib/altnoti/offsite-status.mjs
 
-check_integrity() {
-  python3 - "$1" <<'PY'
-import sqlite3
-import sys
-
-connection = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
-try:
-    if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
-        raise SystemExit(1)
-finally:
-    connection.close()
-PY
-}
-
 if [[ ${1:-} == cleanup ]]; then
-  backup_name=${2:-}
-  [[ $backup_name =~ ^discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite$ ]] || exit 2
-  rm -f -- "$staging_dir/$backup_name"
+  [[ $# -eq 2 && $2 =~ ^discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite$ ]] || exit 2
+  rm -f -- "$staging_dir/$2" "$staging_dir/$2.meta.json"
   exit 0
 fi
 if [[ ${1:-} == mark-failure ]]; then
@@ -31,16 +17,16 @@ if [[ ${1:-} == mark-failure ]]; then
   exec node "$status_helper" mark-failure "$2"
 fi
 if [[ ${1:-} == mark-success ]]; then
-  [[ $# -eq 3 ]] || exit 2
-  backup_name=$2
-  expected_hash=$3
-  [[ $backup_name =~ ^discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite$ && $expected_hash =~ ^[0-9a-f]{64}$ ]] || exit 2
-  staged_path="$staging_dir/$backup_name"
-  [[ -f $staged_path && ! -L $staged_path ]] || exit 1
-  actual_hash=$(sha256sum "$staged_path")
-  [[ ${actual_hash%% *} == "$expected_hash" ]] || exit 1
-  check_integrity "$staged_path"
-  exec node "$status_helper" mark-success
+  [[ $# -eq 4 && $2 =~ ^discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite$ && $3 =~ ^[0-9a-f]{64}$ && $4 =~ ^[0-9]+$ ]] || exit 2
+  name=$2 hash=$3 generation=$4
+  stage="$staging_dir/$name"
+  [[ -f $stage && ! -L $stage ]] || exit 1
+  actual=$(sha256sum "$stage"); [[ ${actual%% *} == "$hash" ]] || exit 1
+  verified=$(node "$privacy_helper" verify "$name")
+  node -e 'const m=JSON.parse(process.argv[1]); if(m.sha256!==process.argv[2] || String(m.privacyGeneration)!==process.argv[3]) process.exit(1)' "$verified" "$hash" "$generation"
+  state=$(node "$privacy_helper" status)
+  node -e 'const s=JSON.parse(process.argv[1]); if(s.cleanupPending || String(s.generation)!==process.argv[2]) process.exit(1)' "$state" "$generation"
+  exec node "$status_helper" mark-success "$generation"
 fi
 if [[ ${1:-} == status ]]; then
   [[ $# -eq 1 ]] || exit 2
@@ -48,22 +34,21 @@ if [[ ${1:-} == status ]]; then
 fi
 [[ $# -eq 0 ]] || exit 2
 
-[[ -s $db_path ]] && check_integrity "$db_path" || { echo 'production database integrity failed' >&2; exit 1; }
+[[ -s $db_path ]] || { echo 'production database unavailable' >&2; exit 1; }
+state=$(node "$privacy_helper" status)
+node -e 'const s=JSON.parse(process.argv[1]); if(s.cleanupPending) process.exit(1)' "$state"
 systemctl start altnoti-backup.service
-mapfile -t backup_names < <(find "$backup_dir" -maxdepth 1 -type f -regextype posix-extended -regex '.*/discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite' -printf '%f\n' | LC_ALL=C sort -r)
-((${#backup_names[@]} > 0)) || { echo 'no backup found' >&2; exit 1; }
-backup_name=${backup_names[0]}
-backup_path="$backup_dir/$backup_name"
-check_integrity "$backup_path" || { echo 'backup integrity failed' >&2; exit 1; }
-remote_hash=$(sha256sum "$backup_path")
-remote_hash=${remote_hash%% *}
+metadata=$(node "$privacy_helper" latest)
+name=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).name)' "$metadata")
+hash=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).sha256)' "$metadata")
+generation=$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).privacyGeneration))' "$metadata")
 
-# scp cannot read the root-only backup directory. Expose one validated copy
-# only to ubuntu in a 0700 staging directory; the caller cleans it up after
-# checksum and SQLite verification on Windows.
 install -d -o ubuntu -g ubuntu -m 700 "$staging_dir"
-find "$staging_dir" -maxdepth 1 -type f -name 'discord-alt-notify-*.sqlite' -mtime +1 -delete
-install -o ubuntu -g ubuntu -m 600 "$backup_path" "$staging_dir/$backup_name"
-staged_hash=$(sha256sum "$staging_dir/$backup_name")
-[[ ${staged_hash%% *} == "$remote_hash" ]] || { rm -f -- "$staging_dir/$backup_name"; echo 'staging hash mismatch' >&2; exit 1; }
-printf '%s %s\n' "$backup_name" "$remote_hash"
+find "$staging_dir" -maxdepth 1 -type f -name 'discord-alt-notify-*.sqlite*' -mtime +1 -delete
+source="$backup_dir/$name"
+stage="$staging_dir/$name"
+[[ -f $source && ! -L $source && ! -e $stage ]] || { echo 'backup staging source invalid' >&2; exit 1; }
+install -o ubuntu -g ubuntu -m 600 "$source" "$stage"
+actual=$(sha256sum "$stage"); [[ ${actual%% *} == "$hash" ]] || { rm -f -- "$stage"; echo 'staging hash mismatch' >&2; exit 1; }
+created=$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).createdAt))' "$metadata")
+printf '{"name":"%s","sha256":"%s","privacyGeneration":%s,"createdAt":%s}\n' "$name" "$hash" "$generation" "$created"

@@ -35,7 +35,7 @@ Alt Notifyは、複数のDiscordアカウントを使う人向けの公開β版�
 4. サブアカウントで `/link approve code:<コード>` を実行し、本人承認します。
 5. 以後、Botが導入されサブアカウント自身も参加しているサーバーを自動監視します。
 
-通常は `/watch on` 不要です。特定サーバーで停止する場合は `/watch off`、再開は `/watch on`、状態確認は `/watch status` です。連携解除は `/unlink`、本人の保存済みデータの削除は、unlink後でも `/account delete` で行えます。削除済みデータはOracle backupに最大14日、Windows VM外backupに30日を保持方針として残る場合があります。Windows PC停止中は次回正常実行まで期限超過分の削除が遅れます。詳しくは[Privacy](docs/PRIVACY.md)を確認してください。
+通常は `/watch on` 不要です。特定サーバーで停止する場合は `/watch off`、再開は `/watch on`、状態確認は `/watch status` です。保存済み表示情報は `/account refresh` で現在のDiscord情報へ更新できます。連携解除は `/unlink`、本人データの削除は `/account delete` です。削除前バックアップは通常の復元候補から除外します。Windows VM外backupは暗号化しますが、PC停止中の物理削除は次回接続まで遅れる場合があります。詳しくは[Privacy](docs/PRIVACY.md)を確認してください。
 
 同じDiscordアカウントをメインとサブの両方に新規登録することはできません。過去に両方で登録されたアカウントは `/status` にその旨を表示し、`/account delete` で両方のデータを削除します。
 

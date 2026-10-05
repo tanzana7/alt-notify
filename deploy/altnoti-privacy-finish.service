@@ -1,10 +1,11 @@
 [Unit]
-Description=AltNoti SQLite backup
+Description=Alt Notify privacy deletion backup finalization
 After=alt-notify.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/altnoti-backup
+ExecStart=/usr/local/sbin/altnoti-backup --privacy-finalize
+TimeoutStartSec=90s
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true

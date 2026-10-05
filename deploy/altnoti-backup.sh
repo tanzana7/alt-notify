@@ -3,43 +3,66 @@ set -euo pipefail
 
 db_path=/var/lib/altnoti/discord-alt-notify.sqlite
 backup_dir=/var/lib/altnoti/backups
+state_helper=/usr/local/lib/altnoti/privacy-deletion-state.mjs
 timestamp=$(date -u +%Y%m%d-%H%M%S)
 backup_path="$backup_dir/discord-alt-notify-$timestamp.sqlite"
 temporary_path="$backup_path.tmp"
+mode=${1:-normal}
+[[ $# -le 1 && ( $mode == normal || $mode == --privacy-finalize ) ]] || { echo 'invalid backup mode' >&2; exit 2; }
+
+# The same lock brackets delete-epoch advancement and each snapshot. A regular
+# timer run must never relabel pre-delete data with a newer privacy generation.
+exec 9>/run/lock/altnoti-backup.lock
+flock -x 9
+
+state_json=$(node "$state_helper" status)
+privacy_pending=$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).cleanupPending))' "$state_json")
+database_deleted=$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).databaseDeleted))' "$state_json")
+if [[ $privacy_pending == true && $database_deleted == true && $mode == normal ]]; then
+  mode=--privacy-finalize
+fi
+if [[ $privacy_pending == true && ( $database_deleted != true || $mode != --privacy-finalize ) ]]; then
+  echo 'privacy deletion maintenance pending' >&2
+  exit 1
+fi
+if [[ $mode == --privacy-finalize && $privacy_pending != true ]]; then
+  exit 0
+fi
+
 retention_cutoff=$(date -u -d '14 days ago' +%Y%m%d%H%M%S)
-
 install -d -o root -g root -m 700 "$backup_dir"
-if [[ ! -f "$db_path" ]]; then
-  echo "database not found: $db_path" >&2
-  exit 1
-fi
-if [[ -e "$backup_path" || -e "$temporary_path" ]]; then
-  echo "backup destination already exists" >&2
-  exit 1
-fi
+[[ -f $db_path && ! -L $db_path && -s $db_path ]] || { echo 'production database unavailable' >&2; exit 1; }
+[[ ! -e $backup_path && ! -e $temporary_path ]] || { echo 'backup destination already exists' >&2; exit 1; }
 
-# The application persists atomically, so copying a stable inode gives the
-# backup job a consistent file without stopping the Gateway process.
+check_integrity() {
+  python3 - "$1" <<'PY'
+import sqlite3
+import sys
+connection = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
+try:
+    if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+        raise SystemExit(1)
+    required = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not {"main_accounts", "account_links", "notification_queue"}.issubset(required):
+        raise SystemExit(1)
+finally:
+    connection.close()
+PY
+}
+
+check_integrity "$db_path"
 cp --reflink=auto --preserve=mode,ownership,timestamps "$db_path" "$temporary_path"
 chmod 600 "$temporary_path"
-mv -f "$temporary_path" "$backup_path"
+check_integrity "$temporary_path"
+mv -n "$temporary_path" "$backup_path"
+[[ -f $backup_path && ! -e $temporary_path ]] || { echo 'atomic backup save failed' >&2; exit 1; }
 
-# The copied DB retains the source mtime. During quiet periods, every backup
-# can have the same mtime, so generation order must come from our UTC filename.
-# Ignore temporary and unexpected names rather than deleting unknown files.
-generation=0
-while IFS= read -r backup_name; do
-  stamp=${backup_name#discord-alt-notify-}
-  stamp=${stamp%.sqlite}
-  canonical=$(date -u -d "${stamp:0:8} ${stamp:9:2}:${stamp:11:2}:${stamp:13:2}" +%Y%m%d-%H%M%S 2>/dev/null || true)
-  # Ignore impossible calendar dates as well as unexpected names: retention
-  # must never turn a malformed file into a deletion target.
-  [[ $canonical == "$stamp" ]] || continue
-  sortable=${stamp//-/}
-  if [[ $sortable < $retention_cutoff ]] || ((generation >= 7)); then
-    rm -f -- "$backup_dir/$backup_name"
-  else
-    ((generation += 1))
-  fi
-done < <(find "$backup_dir" -maxdepth 1 -type f -regextype posix-extended -regex '.*/discord-alt-notify-[0-9]{8}-[0-9]{6}\.sqlite' -printf '%f\n' | LC_ALL=C sort -r)
+# The manifest is written only after the SQLite copy is independently opened
+# and checked; it contains no user or message identifiers.
+node "$state_helper" record "${backup_path##*/}" >/dev/null
+if [[ $mode == --privacy-finalize ]]; then
+  node "$state_helper" complete >/dev/null
+else
+  node "$state_helper" prune >/dev/null
+fi
 echo "backup created: $backup_path"

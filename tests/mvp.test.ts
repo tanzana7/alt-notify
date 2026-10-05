@@ -149,6 +149,18 @@ describe("account lifecycle", () => {
     expect(accounts.getStatus("a")).toMatchObject({ kind: "sub", mainUserId: "main", watches: ["guild"] });
   });
 
+  it("blocks notification authorization immediately while either account is being deleted", async () => {
+    const { accounts } = await setup();
+    await registerMain(accounts);
+    await link(accounts, "main", "sub", "sub");
+    expect(accounts.isNotificationTargetActive("main", "sub", "guild")).toBe(true);
+    accounts.setPrivacyDeletionActive("sub", true);
+    expect(accounts.isNotificationTargetActive("main", "sub", "guild")).toBe(false);
+    accounts.setPrivacyDeletionActive("sub", false);
+    accounts.setPrivacyDeletionActive("main", true);
+    expect(accounts.isNotificationTargetActive("main", "sub", "guild")).toBe(false);
+  });
+
   it("allows developer test entitlement only for the configured Discord ID", async () => {
     const developer = await setup("developer"); const regular = await setup("developer");
     await registerMain(developer.accounts, "developer", "developer"); await registerMain(regular.accounts, "regular", "regular");
@@ -160,7 +172,55 @@ describe("account lifecycle", () => {
     const names = commandDefinitions().map((command) => command.name);
     expect(names).toEqual(expect.arrayContaining(["help", "account"]));
     expect(helpText("AltNoti")).toContain("/link issue");
+    expect(commandDefinitions().find((command) => command.name === "account")?.toJSON().options?.map((option) => option.name)).toContain("refresh");
     expect(helpText("AltNoti")).toContain("/account delete");
+    expect(helpText("AltNoti")).toContain("/account refresh");
+  });
+
+  it("refreshes only the caller's mutable account and queue display fields", async () => {
+    const { accounts, db } = await setup();
+    await registerMain(accounts, "main", "MainOld");
+    await link(accounts, "main", "sub", "SubOld");
+    await registerMain(accounts, "other", "OtherOld");
+    await link(accounts, "other", "other-sub", "OtherSubOld");
+    db.raw.prepare("INSERT INTO notification_queue(main_user_id,message_id,guild_id,kind,mention_type,target_user_ids,target_labels,target_kinds,status,available_at,created_at) VALUES ('main','refresh-row','g','direct','direct',?,?,?,'sent',1,1)").run(JSON.stringify(["sub", "other-sub"]), JSON.stringify(["SubOld", "OtherSubOld"]), JSON.stringify(["direct", "role"]));
+    db.raw.prepare("INSERT INTO guild_watches(guild_id,sub_user_id,enabled,created_at) VALUES ('g','sub',0,5)").run();
+
+    expect(accounts.refreshDisplayData("sub", "SubNew", "Sub Display")).toBe(true);
+    expect(db.raw.prepare("SELECT username FROM account_links WHERE sub_user_id='sub'").get()).toMatchObject({ username: "SubNew" });
+    expect(db.raw.prepare("SELECT username FROM account_links WHERE sub_user_id='other-sub'").get()).toMatchObject({ username: "OtherSubOld" });
+    expect(db.raw.prepare("SELECT target_user_ids,target_labels,target_kinds FROM notification_queue WHERE message_id='refresh-row'").get()).toMatchObject({ target_user_ids: '["sub","other-sub"]', target_labels: '["Sub Display","OtherSubOld"]', target_kinds: '["direct","role"]' });
+    expect(db.raw.prepare("SELECT enabled FROM guild_watches WHERE sub_user_id='sub'").get()).toMatchObject({ enabled: 0 });
+    expect(db.raw.prepare("SELECT plan FROM entitlements WHERE user_id='main'").get()).toMatchObject({ plan: "free" });
+  });
+
+  it("refreshes legacy main and sub records for the same user", async () => {
+    const { accounts, db } = await setup();
+    await registerMain(accounts, "dual", "Before");
+    await registerMain(accounts, "other", "Other");
+    db.raw.prepare("INSERT INTO account_links(sub_user_id,main_user_id,username,created_at) VALUES ('dual','other','Before',1)").run();
+    expect(accounts.refreshDisplayData("dual", "After", "Display")).toBe(true);
+    expect(db.raw.prepare("SELECT username FROM main_accounts WHERE user_id='dual'").get()).toMatchObject({ username: "After" });
+    expect(db.raw.prepare("SELECT username FROM account_links WHERE sub_user_id='dual'").get()).toMatchObject({ username: "After" });
+    expect(db.raw.prepare("SELECT username FROM main_accounts WHERE user_id='other'").get()).toMatchObject({ username: "Other" });
+  });
+
+  it("leaves malformed target label arrays untouched during refresh", async () => {
+    const { accounts, db } = await setup();
+    await registerMain(accounts);
+    db.raw.prepare("INSERT INTO notification_queue(main_user_id,message_id,guild_id,kind,mention_type,target_user_ids,target_labels,status,available_at,created_at) VALUES ('main','malformed','g','direct','direct','[\"user\",\"other\"]','[\"unsafe mapping\"]','sent',1,1)").run();
+    accounts.refreshDisplayData("user", "NewUser", "New Display");
+    expect(db.raw.prepare("SELECT target_user_ids,target_labels FROM notification_queue WHERE message_id='malformed'").get()).toMatchObject({ target_user_ids: '["user","other"]', target_labels: '["unsafe mapping"]' });
+  });
+
+  it("rolls back all refresh writes if one table update fails", async () => {
+    const { accounts, db } = await setup();
+    await registerMain(accounts, "user", "Before");
+    await registerMain(accounts, "other", "Other");
+      db.raw.prepare("INSERT INTO account_links(sub_user_id,main_user_id,username,created_at) VALUES ('user','other','Before',1)").run();
+    db.raw.exec("CREATE TRIGGER fail_refresh BEFORE UPDATE ON account_links BEGIN SELECT RAISE(ABORT, 'test failure'); END");
+    expect(() => accounts.refreshDisplayData("user", "After", "Display")).toThrow();
+    expect(db.raw.prepare("SELECT username FROM main_accounts WHERE user_id='user'").get()).toMatchObject({ username: "Before" });
   });
 
   it("deletes a main account and all directly stored account data", async () => {
@@ -237,6 +297,7 @@ describe("watch and notification flow", () => {
       expect(channelId).toBe(ids.channel);
       return { guildName: "ゲーム仲間", channelName: "雑談" };
     });
+
     await registerMain(state.accounts); await link(state.accounts, "main", ids.user, "sub-account-name");
     await state.notifications.inspect({ id: ids.message, guildId: ids.guild, channelId: ids.channel, authorBot: false, mentionedUserIds: [ids.user], mentionedRoleIds: [ids.role], mentionEveryone: true }, { isMember: async () => true, canViewChannel: async () => true }, new Map([[ids.user, "sub-account-name"]]));
     const sent: string[] = [];

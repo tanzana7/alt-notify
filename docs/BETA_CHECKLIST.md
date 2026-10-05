@@ -5,10 +5,15 @@
 - [ ] `FREE_LINK_LIMIT=1` を確認
 - [ ] Bot招待URLと必要権限を確認
 - [ ] `/help`、`/status`、`/watch status` の表示を確認
-- [x] Oracle/Windows backupの成功履歴と保存世代を確認し、隔離restore drillを完了（[記録](RESTORE_DRILL.md)）
+- [x] Oracle backupの従来形式で成功履歴と隔離restore drillを確認（[記録](RESTORE_DRILL.md)）。暗号化Windows backupの公開前検証は未完了
 - [x] 75 GuildでVerification準備、90 Guildで新規導入停止するゲートと既存Guild保持を確認
-- [x] Privacy/Termsに`/account delete`、`/unlink`、GitHub Issuesと個人情報投稿禁止を明記し、Cloudflare Pagesへ同期（Privacy専用メール窓口は設置しない）
+- [ ] Privacy/Termsに`/account delete`、`/unlink`、`/account refresh`、backup削除・暗号化方針を明記し、Cloudflare Pagesへ同期（Privacy専用メール窓口は設置しない）
+- [ ] GitHub ActionsのUbuntu/Windows CIが今回のrelease commitで成功
 - [x] Windows版Botが停止し、Oracle版だけが稼働していることを確認
+- [ ] `/account delete`後にprivacy generationが進み、削除後Oracle backupだけがrestore可能
+- [ ] Windows offsite backupのDPAPI鍵/ACL、暗号化・restore drill成功後に平文世代が0件
+- [ ] `/account refresh`がコマンド登録済みで、本人の変更可能表示情報だけを更新
+- [ ] CI成功、公開Privacy/Termsが原稿と一致
 
 ## 利用状況（本文を収集しない）
 

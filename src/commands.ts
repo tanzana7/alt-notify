@@ -15,6 +15,7 @@ export function commandDefinitions(appName = "AltNoti") {
     new SlashCommandBuilder().setName("status").setDescription("連携と監視設定を表示"),
     new SlashCommandBuilder().setName("help").setDescription("使い方を表示"),
     new SlashCommandBuilder().setName("account").setDescription("アカウント設定を管理します")
+      .addSubcommand((s) => s.setName("refresh").setDescription("保存済み表示情報を現在のDiscord情報へ更新"))
       .addSubcommand((s) => s.setName("delete").setDescription(`${appName}の登録データを削除`)),
     new SlashCommandBuilder().setName("admin-stats").setDescription("運営統計を表示")
   ];

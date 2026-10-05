@@ -1,0 +1,1 @@
+altnoti ALL=(root) NOPASSWD: /usr/local/sbin/altnoti-privacy begin, /usr/local/sbin/altnoti-privacy database-deleted, /usr/local/sbin/altnoti-privacy finish, /usr/local/sbin/altnoti-privacy status

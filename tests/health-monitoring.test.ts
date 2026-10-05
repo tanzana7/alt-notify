@@ -17,12 +17,14 @@ async function fixture(options: { offsite?: boolean; maxPending?: number; maxFai
   db.raw.prepare("INSERT INTO main_accounts(user_id,username,created_at) VALUES ('main','Main',0)").run();
   const requests: string[] = [];
   const statusPath = path.join(directory, "offsite-status.json");
+  const privacyPath = path.join(directory, "privacy-state.json");
+  fs.writeFileSync(privacyPath, JSON.stringify({ generation: 0, lastDeletionAt: 0, cleanupPending: false, databaseDeleted: false }));
   const service = new HealthcheckService(db, new Logger("error"), "https://healthchecks.example/private", options.maxPending ?? 200, options.maxFailures ?? 5,
     async (url) => { requests.push(url); return true; }, () => NOW,
-    { maxQueueAgeMs: 300_000, maxOffsiteBackupAgeMs: 129_600_000, ...(options.offsite ? { offsiteStatusPath: statusPath } : {}) });
+    { maxQueueAgeMs: 300_000, maxOffsiteBackupAgeMs: 129_600_000, ...(options.offsite ? { offsiteStatusPath: statusPath, privacyDeletionStatePath: privacyPath } : {}) });
   const queue = (status: "pending" | "processing", availableAt: number) => db.raw.prepare("INSERT INTO notification_queue(main_user_id,message_id,guild_id,kind,target_user_ids,target_labels,status,available_at,created_at) VALUES ('main',?,'guild','direct','[]','[]',?,?,0)").run(`${status}-${availableAt}`, status, availableAt);
-  const offsite = (state: "ok" | "failed", lastSuccessAt: number | null, lastAttemptAt = NOW) => fs.writeFileSync(statusPath, JSON.stringify({ state, lastAttemptAt, lastSuccessAt, ...(state === "failed" ? { failureCode: "transfer_failed" } : {}) }));
-  return { db, service, requests, statusPath, queue, offsite };
+  const offsite = (state: "ok" | "failed", lastSuccessAt: number | null, lastAttemptAt = NOW, privacyGeneration = 0) => fs.writeFileSync(statusPath, JSON.stringify({ state, lastAttemptAt, lastSuccessAt, privacyGeneration, ...(state === "failed" ? { failureCode: "transfer_failed" } : {}) }));
+  return { db, service, requests, statusPath, privacyPath, queue, offsite };
 }
 
 afterEach(() => {
@@ -72,6 +74,7 @@ describe("Windows offsite backup status monitoring", () => {
   it("uses the root-managed production status path by default", () => {
     const config = loadConfig({ DISCORD_TOKEN: "fixture", DISCORD_CLIENT_ID: "fixture" });
     expect(config.HEALTHCHECKS_OFFSITE_STATUS_PATH).toBe("/var/lib/altnoti-monitoring/offsite-backup-status.json");
+    expect(config.PRIVACY_DELETION_STATE_PATH).toBe("/var/lib/altnoti-monitoring/privacy-deletion-state.json");
     expect(config.HEALTHCHECKS_MAX_OFFSITE_BACKUP_AGE_MS).toBe(129_600_000);
   });
 
@@ -108,5 +111,14 @@ describe("Windows offsite backup status monitoring", () => {
     expect((await state.service.check(true)).healthy).toBe(false);
     state.offsite("ok", NOW);
     expect(await state.service.check(true)).toMatchObject({ healthy: true, reason: "ok", snapshot: { offsiteBackupState: "ok", offsiteBackupAgeMs: 0 } });
+  });
+
+  it("fails heartbeat while privacy deletion is pending or Windows has not caught up to the generation", async () => {
+    const state = await fixture({ offsite: true }); state.offsite("ok", NOW, NOW, 0);
+    fs.writeFileSync(state.privacyPath, JSON.stringify({ generation: 1, lastDeletionAt: 1, cleanupPending: true, databaseDeleted: false }));
+    expect(await state.service.check(true)).toMatchObject({ healthy: false, reason: "privacy_deletion_pending" });
+    fs.writeFileSync(state.privacyPath, JSON.stringify({ generation: 1, lastDeletionAt: 1, cleanupPending: false, databaseDeleted: false }));
+    expect(await state.service.check(true)).toMatchObject({ healthy: false, reason: "offsite_backup_privacy_stale" });
+    expect(state.requests).toEqual(["https://healthchecks.example/private/fail", "https://healthchecks.example/private/fail"]);
   });
 });

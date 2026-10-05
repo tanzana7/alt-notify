@@ -7,13 +7,22 @@ export interface AccountStatus { kind: "main" | "sub" | "none"; mainUserId?: str
 
 export class AccountService {
   private readonly failedCodeAttempts = new Map<string, { since: number; count: number }>();
+  private readonly privacyDeletingUsers = new Set<string>();
   private readonly maxFailedAttemptUsers = 1_000;
   public constructor(private readonly db: SqliteDatabase, private readonly developerTestId?: string, private readonly pepper = "", private readonly freeLinkLimit = 1) {}
+
+  public setPrivacyDeletionActive(userId: string, active: boolean): void {
+    if (active) this.privacyDeletingUsers.add(userId);
+    else this.privacyDeletingUsers.delete(userId);
+  }
+
+  public isPrivacyDeletionActive(userId: string): boolean { return this.privacyDeletingUsers.has(userId); }
 
   public registerMain(userId: string, username: string, testDm: () => Promise<void>, now = Date.now()): Promise<void> {
     if (this.db.raw.prepare("SELECT 1 FROM account_links WHERE sub_user_id=?").get(userId)) throw new UserFacingError("このアカウントはすでにサブアカウントとして連携されています");
     return testDm().then(() => {
       const tx = this.db.raw.transaction(() => {
+        this.requirePrivacyDeletionInactive(userId);
         // The DM check above awaits Discord; a sub link may have been approved
         // while it was in flight. Keep the role boundary atomic with the write.
         if (this.db.raw.prepare("SELECT 1 FROM account_links WHERE sub_user_id=?").get(userId)) throw new UserFacingError("このアカウントはすでにサブアカウントとして連携されています");
@@ -26,6 +35,7 @@ export class AccountService {
   }
 
   public issueLinkCode(mainUserId: string, now = Date.now()): string {
+    this.requirePrivacyDeletionInactive(mainUserId);
     this.requireMain(mainUserId);
     const code = crypto.randomBytes(18).toString("base64url");
     const hash = this.hashCode(code);
@@ -61,6 +71,7 @@ export class AccountService {
   public get failedAttemptUsers(): number { return this.failedCodeAttempts.size; }
 
   public approveLinkByHash(subUserId: string, codeHash: string, username: string, now = Date.now()): { mainUserId: string; mainUsername: string } {
+    this.requirePrivacyDeletionInactive(subUserId);
     const tx = this.db.raw.transaction(() => {
       if (this.db.raw.prepare("SELECT 1 FROM main_accounts WHERE user_id=?").get(subUserId)) throw new UserFacingError("メインアカウントとして登録済みのアカウントはサブとして連携できません");
       const row = this.getCodeRow(codeHash);
@@ -138,8 +149,56 @@ export class AccountService {
     return main || hasMainData ? "main" : "sub";
   }
 
+  public hasDataForUser(userId: string): boolean {
+    const main = this.db.raw.prepare("SELECT 1 FROM main_accounts WHERE user_id=?").get(userId);
+    const sub = this.db.raw.prepare("SELECT 1 FROM account_links WHERE sub_user_id=?").get(userId);
+    const watches = this.db.raw.prepare("SELECT 1 FROM guild_watches WHERE sub_user_id=? LIMIT 1").get(userId);
+    const mainData = this.db.raw.prepare("SELECT 1 FROM entitlements WHERE user_id=? UNION SELECT 1 FROM link_codes WHERE main_user_id=? UNION SELECT 1 FROM notification_dedup WHERE main_user_id=? UNION SELECT 1 FROM notification_queue WHERE main_user_id=? UNION SELECT 1 FROM account_links WHERE main_user_id=? LIMIT 1").get(userId, userId, userId, userId, userId);
+    if (main || sub || watches || mainData) return true;
+    const rows = this.db.raw.prepare("SELECT target_user_ids FROM notification_queue").all() as Array<{ target_user_ids: string }>;
+    return rows.some((row) => {
+      try { return (JSON.parse(row.target_user_ids) as unknown[]).includes(userId); }
+      catch { return false; }
+    });
+  }
+
+  /** Refreshes only the caller's mutable display fields; IDs and lifecycle data remain untouched. */
+  public refreshDisplayData(userId: string, username: string, displayName: string): boolean {
+    if (!userId || !username || !displayName) throw new UserFacingError("現在のDiscordアカウント情報を取得できませんでした");
+    const tx = this.db.raw.transaction(() => {
+      let found = false;
+      const main = this.db.raw.prepare("UPDATE main_accounts SET username=? WHERE user_id=?").run(username, userId);
+      const sub = this.db.raw.prepare("UPDATE account_links SET username=? WHERE sub_user_id=?").run(username, userId);
+      found ||= main.changes > 0 || sub.changes > 0;
+
+      const rows = this.db.raw.prepare("SELECT id, target_user_ids, target_labels FROM notification_queue").all() as Array<{ id: number; target_user_ids: string; target_labels: string }>;
+      for (const row of rows) {
+        let ids: unknown;
+        let labels: unknown;
+        try { ids = JSON.parse(row.target_user_ids); labels = JSON.parse(row.target_labels); }
+        catch { continue; }
+        // Misaligned legacy arrays have no reliable ID↔label mapping. Leave the
+        // whole row intact rather than risk replacing another user's label.
+        if (!Array.isArray(ids) || !Array.isArray(labels) || ids.length !== labels.length || !ids.every((id) => typeof id === "string")) continue;
+        let changed = false;
+        const next = labels.map((label, index) => {
+          if (ids[index] !== userId) return label;
+          changed ||= label !== displayName;
+          return displayName;
+        });
+        if (changed) {
+          this.db.raw.prepare("UPDATE notification_queue SET target_labels=? WHERE id=?").run(JSON.stringify(next), row.id);
+          found = true;
+        }
+      }
+      return found;
+    });
+    return tx() as boolean;
+  }
+
   /** Synchronous DB-only check used at both sides of Discord's async boundary. */
   public isNotificationTargetActive(mainUserId: string, subUserId: string, guildId: string): boolean {
+    if (this.isPrivacyDeletionActive(mainUserId) || this.isPrivacyDeletionActive(subUserId)) return false;
     const link = this.db.raw.prepare("SELECT 1 FROM account_links WHERE main_user_id=? AND sub_user_id=? LIMIT 1").get(mainUserId, subUserId);
     if (!link) return false;
     const watch = this.db.raw.prepare("SELECT enabled FROM guild_watches WHERE guild_id=? AND sub_user_id=?").get(guildId, subUserId) as { enabled: number } | undefined;
@@ -194,6 +253,7 @@ export class AccountService {
   }
 
   private requireMain(userId: string): void { if (!this.db.raw.prepare("SELECT 1 FROM main_accounts WHERE user_id=?").get(userId)) throw new UserFacingError("先に /main set を実行してください"); }
+  private requirePrivacyDeletionInactive(userId: string): void { if (this.isPrivacyDeletionActive(userId)) throw new UserFacingError("アカウント削除処理中です。完了後に再度お試しください。"); }
   private hashCode(code: string): string { return crypto.createHash("sha256").update(`${this.pepper}:${code}`).digest("hex"); }
   public hashForApproval(code: string): string { return this.hashCode(code); }
 }

@@ -11,8 +11,8 @@ export const FAILURE_CODES = new Set(["prepare_failed", "transfer_failed", "hash
 function statusPath(directory) { return path.join(directory, OFFSITE_STATUS_FILENAME); }
 
 function validateStatus(value) {
-  if (!value || typeof value !== "object" || !["ok", "failed"].includes(value.state) || !Number.isSafeInteger(value.lastAttemptAt) || value.lastAttemptAt < 0 || !(value.lastSuccessAt === null || (Number.isSafeInteger(value.lastSuccessAt) && value.lastSuccessAt >= 0))) throw new Error("invalid offsite status");
-  if (value.state === "ok" && (value.lastSuccessAt === null || value.failureCode !== undefined)) throw new Error("invalid offsite status");
+  if (!value || typeof value !== "object" || !["ok", "failed"].includes(value.state) || !Number.isSafeInteger(value.lastAttemptAt) || value.lastAttemptAt < 0 || !(value.lastSuccessAt === null || (Number.isSafeInteger(value.lastSuccessAt) && value.lastSuccessAt >= 0)) || (value.privacyGeneration !== undefined && (!Number.isSafeInteger(value.privacyGeneration) || value.privacyGeneration < 0))) throw new Error("invalid offsite status");
+  if (value.state === "ok" && (value.lastSuccessAt === null || value.failureCode !== undefined || !Number.isSafeInteger(value.privacyGeneration))) throw new Error("invalid offsite status");
   if (value.state === "failed" && !FAILURE_CODES.has(value.failureCode)) throw new Error("invalid offsite status");
   return value;
 }
@@ -37,15 +37,16 @@ function ensureDirectory(directory, rootGroupId) {
   }
 }
 
-export function writeOffsiteStatus(directory, state, failureCode, now = Date.now(), rootGroupId) {
+export function writeOffsiteStatus(directory, state, failureCode, now = Date.now(), rootGroupId, privacyGeneration) {
   if (state !== "ok" && state !== "failed") throw new Error("invalid state");
   if (state === "failed" ? !FAILURE_CODES.has(failureCode) : failureCode !== undefined) throw new Error("invalid failure code");
   if (!Number.isSafeInteger(now) || now < 0) throw new Error("invalid timestamp");
+  if (state === "ok" && (!Number.isSafeInteger(privacyGeneration) || privacyGeneration < 0)) throw new Error("invalid privacy generation");
   ensureDirectory(directory, rootGroupId);
   const previous = readOffsiteStatus(directory);
   const next = state === "ok"
-    ? { state, lastAttemptAt: now, lastSuccessAt: now }
-    : { state, lastAttemptAt: now, lastSuccessAt: previous?.lastSuccessAt ?? null, failureCode };
+    ? { state, lastAttemptAt: now, lastSuccessAt: now, privacyGeneration }
+    : { state, lastAttemptAt: now, lastSuccessAt: previous?.lastSuccessAt ?? null, ...(previous?.privacyGeneration !== undefined ? { privacyGeneration: previous.privacyGeneration } : {}), failureCode };
   const temporary = path.join(directory, `.offsite-status-${randomBytes(8).toString("hex")}.tmp`);
   let fd;
   try {
@@ -69,17 +70,19 @@ export function writeOffsiteStatus(directory, state, failureCode, now = Date.now
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const [command, code, extra] = process.argv.slice(2);
+    const [command, argument, extra] = process.argv.slice(2);
     if (extra !== undefined || !["mark-success", "mark-failure", "status"].includes(command)) throw new Error("invalid command");
     if (command === "status") {
-      if (code !== undefined) throw new Error("invalid command");
+      if (argument !== undefined) throw new Error("invalid command");
       const current = readOffsiteStatus(OFFSITE_STATUS_DIRECTORY);
       if (!current) throw new Error("status missing");
       console.log(JSON.stringify(current));
     } else {
       const groupId = Number(execFileSync("id", ["-g", "altnoti"], { encoding: "utf8" }).trim());
       if (!Number.isSafeInteger(groupId)) throw new Error("group missing");
-      writeOffsiteStatus(OFFSITE_STATUS_DIRECTORY, command === "mark-success" ? "ok" : "failed", code, Date.now(), groupId);
+      if (command === "mark-success" && !/^\d+$/.test(argument ?? "")) throw new Error("invalid command");
+      if (command === "mark-failure" && !argument) throw new Error("invalid command");
+      writeOffsiteStatus(OFFSITE_STATUS_DIRECTORY, command === "mark-success" ? "ok" : "failed", command === "mark-failure" ? argument : undefined, Date.now(), groupId, command === "mark-success" ? Number(argument) : undefined);
     }
   } catch {
     // This privileged helper never prints paths, exception text, or secrets.

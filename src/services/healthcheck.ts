@@ -2,10 +2,10 @@ import type { SqliteDatabase } from "../db.js";
 import type { Logger } from "../logger.js";
 import { lstatSync, readFileSync } from "node:fs";
 
-export interface HealthSnapshot { pending: number; failedIn15m: number; oldestDueAgeMs: number; offsiteBackupState: "disabled" | "ok" | "failed" | "missing" | "invalid"; offsiteBackupAgeMs: number | null; }
+export interface HealthSnapshot { pending: number; failedIn15m: number; oldestDueAgeMs: number; offsiteBackupState: "disabled" | "ok" | "failed" | "missing" | "invalid"; offsiteBackupAgeMs: number | null; offsitePrivacyGeneration: number | null; privacyDeletionState: "disabled" | "ok" | "pending" | "missing" | "invalid"; privacyGeneration: number | null; }
 export interface HealthcheckResult { enabled: boolean; healthy: boolean; requestSent: boolean; reason: string; snapshot: HealthSnapshot; }
 type HealthcheckRequest = (url: string) => Promise<boolean>;
-interface HealthcheckThresholds { maxQueueAgeMs?: number; maxOffsiteBackupAgeMs?: number; offsiteStatusPath?: string | undefined; }
+interface HealthcheckThresholds { maxQueueAgeMs?: number; maxOffsiteBackupAgeMs?: number; offsiteStatusPath?: string | undefined; privacyDeletionStatePath?: string | undefined; }
 
 export class HealthcheckService {
   public constructor(
@@ -58,29 +58,49 @@ export class HealthcheckService {
     // transition time, giving us a failure window without a schema migration.
     const failedIn15m = Number((this.db.raw.prepare("SELECT COUNT(*) AS count FROM notification_queue WHERE status='failed' AND available_at>=?").get(failedSince) as { count: number }).count);
     const offsite = this.offsiteSnapshot(now);
-    return { pending, failedIn15m, oldestDueAgeMs, ...offsite };
+    return { pending, failedIn15m, oldestDueAgeMs, ...offsite, ...this.privacySnapshot() };
   }
 
-  private offsiteSnapshot(now: number): Pick<HealthSnapshot, "offsiteBackupState" | "offsiteBackupAgeMs"> {
+  private offsiteSnapshot(now: number): Pick<HealthSnapshot, "offsiteBackupState" | "offsiteBackupAgeMs" | "offsitePrivacyGeneration"> {
     const path = this.thresholds.offsiteStatusPath;
-    if (!path) return { offsiteBackupState: "disabled", offsiteBackupAgeMs: null };
+    if (!path) return { offsiteBackupState: "disabled", offsiteBackupAgeMs: null, offsitePrivacyGeneration: null };
     try {
       const file = lstatSync(path);
-      if (!file.isFile() || file.isSymbolicLink()) return { offsiteBackupState: "invalid", offsiteBackupAgeMs: null };
+      if (!file.isFile() || file.isSymbolicLink()) return { offsiteBackupState: "invalid", offsiteBackupAgeMs: null, offsitePrivacyGeneration: null };
       const data: unknown = JSON.parse(readFileSync(path, "utf8"));
       if (typeof data !== "object" || data === null) throw new Error("invalid status");
       const status = data as Record<string, unknown>;
-      if ((status.state !== "ok" && status.state !== "failed") || !Number.isSafeInteger(status.lastAttemptAt) || Number(status.lastAttemptAt) < 0 || (status.lastSuccessAt !== null && (!Number.isSafeInteger(status.lastSuccessAt) || Number(status.lastSuccessAt) < 0))) throw new Error("invalid status");
+      if ((status.state !== "ok" && status.state !== "failed") || !Number.isSafeInteger(status.lastAttemptAt) || Number(status.lastAttemptAt) < 0 || (status.lastSuccessAt !== null && (!Number.isSafeInteger(status.lastSuccessAt) || Number(status.lastSuccessAt) < 0)) || !Number.isSafeInteger(status.privacyGeneration) || Number(status.privacyGeneration) < 0) throw new Error("invalid status");
       if (status.state === "ok" && status.lastSuccessAt === null) throw new Error("invalid status");
-      return { offsiteBackupState: status.state, offsiteBackupAgeMs: status.lastSuccessAt === null ? null : now - Number(status.lastSuccessAt) };
+      return { offsiteBackupState: status.state, offsiteBackupAgeMs: status.lastSuccessAt === null ? null : now - Number(status.lastSuccessAt), offsitePrivacyGeneration: typeof status.privacyGeneration === "number" ? status.privacyGeneration : null };
     } catch (error) {
-      return { offsiteBackupState: error instanceof Error && "code" in error && error.code === "ENOENT" ? "missing" : "invalid", offsiteBackupAgeMs: null };
+      return { offsiteBackupState: error instanceof Error && "code" in error && error.code === "ENOENT" ? "missing" : "invalid", offsiteBackupAgeMs: null, offsitePrivacyGeneration: null };
+    }
+  }
+
+  private privacySnapshot(): Pick<HealthSnapshot, "privacyDeletionState" | "privacyGeneration"> {
+    const path = this.thresholds.privacyDeletionStatePath;
+    if (!path) return { privacyDeletionState: "disabled", privacyGeneration: null };
+    try {
+      const file = lstatSync(path);
+      if (!file.isFile() || file.isSymbolicLink()) return { privacyDeletionState: "invalid", privacyGeneration: null };
+      const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+      if (typeof value !== "object" || value === null) throw new Error("invalid privacy state");
+      const state = value as Record<string, unknown>;
+      if (!Number.isSafeInteger(state.generation) || Number(state.generation) < 0 || !Number.isSafeInteger(state.lastDeletionAt) || Number(state.lastDeletionAt) < 0 || ((state.generation === 0) !== (state.lastDeletionAt === 0)) || typeof state.cleanupPending !== "boolean" || typeof state.databaseDeleted !== "boolean" || (!state.cleanupPending && state.databaseDeleted) || (state.generation === 0 && (state.cleanupPending || state.databaseDeleted)) || Object.keys(state).some((key) => !["generation", "lastDeletionAt", "cleanupPending", "databaseDeleted"].includes(key))) throw new Error("invalid privacy state");
+      return { privacyDeletionState: state.cleanupPending ? "pending" : "ok", privacyGeneration: Number(state.generation) };
+    } catch (error) {
+      return { privacyDeletionState: error instanceof Error && "code" in error && error.code === "ENOENT" ? "missing" : "invalid", privacyGeneration: null };
     }
   }
 
   private unhealthyReason(snapshot: HealthSnapshot): string | undefined {
     if (snapshot.pending >= this.maxPending || snapshot.failedIn15m >= this.maxFailuresIn15m) return "queue_or_failure_threshold";
     if (snapshot.oldestDueAgeMs >= (this.thresholds.maxQueueAgeMs ?? 300_000)) return "queue_age_exceeded";
+    if (snapshot.privacyDeletionState === "missing") return "privacy_state_missing";
+    if (snapshot.privacyDeletionState === "invalid") return "privacy_state_invalid";
+    if (snapshot.privacyDeletionState === "pending") return "privacy_deletion_pending";
+    if (snapshot.offsitePrivacyGeneration !== null && snapshot.privacyGeneration !== null && snapshot.offsitePrivacyGeneration !== snapshot.privacyGeneration) return "offsite_backup_privacy_stale";
     if (snapshot.offsiteBackupState === "missing") return "offsite_backup_missing";
     if (snapshot.offsiteBackupState === "invalid") return "offsite_backup_invalid";
     if (snapshot.offsiteBackupState === "failed") return "offsite_backup_failed";

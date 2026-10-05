@@ -34,12 +34,21 @@ import { confirmAccountDeletion } from "./services/account-delete-button.js";
 import { cancelAccountDeletion } from "./services/account-delete-button.js";
 import { createDiscordNotificationSender } from "./services/discord-notification-sender.js";
 import { getGuildGateState, shouldLeaveNewGuild } from "./services/guild-gate.js";
+import { PrivacyDeletionService } from "./services/privacy-deletion.js";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 const config = loadConfig();
 const logger = new Logger(config.LOG_LEVEL);
 const db = await SqliteDatabase.open(config.DATABASE_PATH, { requireExisting: true });
 db.cleanup();
 const accounts = new AccountService(db, config.DEVELOPER_TEST_DISCORD_ID, config.LINK_CODE_PEPPER, config.FREE_LINK_LIMIT);
+const executeFile = promisify(execFile);
+const privacyDeletion = new PrivacyDeletionService(accounts, {
+  async begin() { await executeFile("sudo", ["-n", "/usr/local/sbin/altnoti-privacy", "begin"], { timeout: 15_000 }); },
+  async databaseDeleted() { await executeFile("sudo", ["-n", "/usr/local/sbin/altnoti-privacy", "database-deleted"], { timeout: 15_000 }); },
+  async finish() { await executeFile("sudo", ["-n", "/usr/local/sbin/altnoti-privacy", "finish"], { timeout: 90_000 }); }
+});
 const watches = new WatchService(db, accounts);
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages],
@@ -65,7 +74,8 @@ const notifications = new NotificationService(
 const healthchecks = new HealthcheckService(db, logger, config.HEALTHCHECKS_HEARTBEAT_URL, config.HEALTHCHECKS_MAX_PENDING_QUEUE, config.HEALTHCHECKS_MAX_FAILURES_15M, undefined, undefined, {
   maxQueueAgeMs: config.HEALTHCHECKS_MAX_QUEUE_AGE_MS,
   maxOffsiteBackupAgeMs: config.HEALTHCHECKS_MAX_OFFSITE_BACKUP_AGE_MS,
-  offsiteStatusPath: config.HEALTHCHECKS_OFFSITE_STATUS_PATH
+  offsiteStatusPath: config.HEALTHCHECKS_OFFSITE_STATUS_PATH,
+  privacyDeletionStatePath: config.PRIVACY_DELETION_STATE_PATH
 });
 const pendingApprovals = new ApprovalStore();
 const pendingDeletions = new ApprovalStore();
@@ -88,6 +98,10 @@ function privateReply(interaction: ChatInputCommandInteraction | ButtonInteracti
 async function handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   const subcommand = interaction.options.getSubcommand(false);
   try {
+    if (privacyDeletion.isDeleting(interaction.user.id)) {
+      await privateReply(interaction, "アカウント削除処理中です。完了後に再度お試しください。");
+      return;
+    }
     if (interaction.commandName === "help") {
       await privateReply(interaction, helpText(config.APP_NAME));
       return;
@@ -142,7 +156,15 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
         new ButtonBuilder().setCustomId(`account-delete:${token}`).setLabel("削除する").setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId(`account-delete-cancel:${token}`).setLabel("キャンセル").setStyle(ButtonStyle.Secondary)
       );
-      await privateReply(interaction, `${config.APP_NAME}に保存された連携・監視設定・通知履歴など、このアカウントのデータを削除します。バックアップ上のコピーは保持期間中残る場合があります。この操作は取り消せません。`, [row]);
+      await privateReply(interaction, `${config.APP_NAME}の保存データを削除します。削除前backupは復元に使いません。Windows PCがofflineの場合、VM外コピーの物理削除は次回接続まで遅れる場合があります。この操作は取り消せません。`, [row]);
+      return;
+    }
+    if (interaction.commandName === "account" && subcommand === "refresh") {
+      await interaction.deferReply(interaction.inGuild() ? { flags: MessageFlags.Ephemeral } : {});
+      const changed = accounts.refreshDisplayData(interaction.user.id, interaction.user.username, interaction.user.globalName ?? interaction.user.username);
+      await interaction.editReply(changed
+        ? "保存されている表示情報を現在のDiscordアカウント情報へ更新しました。"
+        : "更新できる保存情報がありません。");
       return;
     }
     if (interaction.commandName === "status") {
@@ -216,7 +238,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.customId.startsWith("account-delete:")) {
     const token = interaction.customId.slice("account-delete:".length);
     try {
-      await confirmAccountDeletion(interaction, token, pendingDeletions, accounts);
+      await confirmAccountDeletion(interaction, token, pendingDeletions, privacyDeletion);
     } catch (error) {
       const content = interactionError(error, "account delete");
       if (interaction.deferred) await interaction.editReply({ content, components: [] });
@@ -225,6 +247,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return;
   }
   if (!interaction.customId.startsWith("link-approve:")) return;
+  if (privacyDeletion.isDeleting(interaction.user.id)) {
+    await privateReply(interaction, "アカウント削除処理中です。完了後に再度お試しください。");
+    return;
+  }
   const token = interaction.customId.slice("link-approve:".length);
   try {
     const codeHash = pendingApprovals.consume(token, interaction.user.id);
