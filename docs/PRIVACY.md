@@ -37,4 +37,4 @@ Guild名とChannel名は通知表示のためDiscordのキャッシュから参�
 
 ## 問い合わせ
 
-一般的な問い合わせは [GitHub Issues](https://github.com/tanzana7/alt-notify/issues) を利用できます。公開Issueに個人情報・認証情報を投稿しないでください。個人情報を含む問い合わせ用の非公開窓口は、運営者が承認した連絡先の確定後に案内します。アカウントデータは`/account delete`、個別連携は`/unlink`で削除できます。
+一般的な問い合わせ・不具合報告は [GitHub Issues](https://github.com/tanzana7/alt-notify/issues) を利用できます。公開Issueに個人情報・認証情報を投稿しないでください。保存済みデータの削除は`/account delete`、個別のサブアカウント連携解除は`/unlink`で行えます。

@@ -28,6 +28,6 @@ Alt NotifyはDiscordとは独立したサービスであり、Discordが提供�
 
 ## 変更・連絡
 
-利用条件はβ運用に合わせて更新します。一般的な問い合わせは [GitHub Issues](https://github.com/tanzana7/alt-notify/issues) を利用できます。公開Issueに個人情報・認証情報を投稿しないでください。
+利用条件はβ運用に合わせて更新します。一般的な問い合わせ・不具合報告は [GitHub Issues](https://github.com/tanzana7/alt-notify/issues) を利用できます。公開Issueに個人情報・認証情報を投稿しないでください。保存済みデータの削除は`/account delete`、個別のサブアカウント連携解除は`/unlink`で行ってください。
 
 Discordの公式条件・開発者向け条件も適用されます。利用前に [Discord Terms of Service](https://discord.com/terms) と [Discord Developer Terms of Service](https://support-dev.discord.com/hc/en-us/articles/8562894815383-Discord-Developer-Terms-of-Service) を確認してください。
