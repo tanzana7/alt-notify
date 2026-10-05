@@ -1,6 +1,6 @@
 {
   "name": "discord-alt-notify-mvp",
-  "version": "0.1.0-beta.11",
+  "version": "0.1.0-beta.12",
   "private": true,
   "description": "Discord公式Bot APIだけで複数アカウントのメンションを集約するMVP",
   "type": "module",

@@ -11,6 +11,8 @@
 
 2026-10-05の運用整備では、Oracle/Windowsの実backupを隔離一時領域へ複製し、productionと同じ`requireExisting` DB openおよびservice初期化を通すrestore drillを実施した。両方でintegrity、必須table、件数確認に成功。OneDrive外のEd25519 SSH keyを登録し、sudoとWindows offsite backup taskの成功を確認後にOracleから旧公開鍵を失効し、旧鍵での接続拒否と新鍵での接続を確認した。OneDrive上の旧秘密鍵実体も削除した。Healthchecks endpointは安全な手動probeでHTTP 200。GitHub Actions CIはUbuntu/Windowsとも成功した。運営判断によりPrivacy専用メール窓口は設置せず、データ削除は`/account delete`、個別連携解除は`/unlink`、一般問い合わせ・不具合報告はGitHub Issues（個人情報・認証情報は投稿しない）とする。Cloudflare PagesのLP/Privacy/Termsはproductionへ反映し、3ページともHTTP 200かつローカル原稿との完全一致を確認した。beta.11公開準備が整った。
 
+2026-10-06のbeta.12ハードニングでは、privacy deletion epochにDB削除確定段階を加え、削除処理の中断・再開時に古い確定状態を再利用しないことを確認した。Oracle backupは整合性・schema・世代メタデータを検証し、削除前世代をrestore候補から除外する。既存の未メタデータ世代は削除せず隔離保管し、新しい検証済み世代を作成した。Windows VM外backupはAES-256-GCM、ランダムnonce、認証タグ、暗号化されたSHA-256/長さ情報、CurrentUser DPAPI鍵、利用者とSYSTEMだけのACLで保存する。復号したDBはファイル化せずrestore drillを通し、検証後にのみ平文世代を削除した。Windows Task Schedulerの実行結果は成功、平文0件・暗号化世代ありを確認した。`/account refresh`をSlash Commandへ登録し、本人の現在のDiscord表示情報だけを更新する経路を確認した。BotはOracleでactive/enabled、Gateway ready、DB整合性、既存件数、キュー状態を維持している。破壊的な本番`/account delete`実機試験は行っていない。
+
 ## 指摘一覧
 
 | ID | 重大度 | 状態 | 内容と根拠 |

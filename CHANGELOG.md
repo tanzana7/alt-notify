@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-beta.12 - 2026-10-06
+
+公開拡大前のデータ保護とバックアップ復旧経路を強化。
+
+- `/account delete` のprivacy deletion epochとDB削除確定段階を追加し、削除前backupを通常のrestore候補から除外
+- Oracle backupを整合性・schema・世代メタデータ付きで検証し、削除後に安全な世代を確認してから旧世代を整理
+- Windows VM外backupをAES-256-GCMで暗号化し、CurrentUser DPAPI保護鍵、最小ACL、インメモリrestore drill、平文移行を追加
+- `/account refresh` で本人の保存済みusername・表示名を現在のDiscord情報へ更新
+- backup/削除処理の中断再開、systemd、Healthchecks、Windows Task Schedulerの回帰テストを追加
+
 ## 0.1.0-beta.11 - 2026-10-05
 
 公開βの長期運用に向けて、保持期間・復旧手順・拡大ゲートを明確化。
