@@ -26,6 +26,24 @@ foreach ($line in $aclOutput) {
 }
 $expectedRights = if ($Kind -eq 'Directory') { '(OI)(CI)(F)' } else { '(F)' }
 $expected = @($ownerName, $systemName)
-if ($rules.Count -ne 2) { throw "ACL_${($Kind.ToUpperInvariant())}_RULE_COUNT_$($rules.Count)" }
+$ownerSidValue = $owner.Value
+$systemSidValue = 'S-1-5-18'
+$categories = @($rules | ForEach-Object {
+  try {
+    $identity = $_.Identity
+    if ($identity -match '^\*?(S-1-[0-9-]+)$') { $sidValue = $Matches[1] }
+    else { $sidValue = (New-Object Security.Principal.NTAccount($identity)).Translate([Security.Principal.SecurityIdentifier]).Value }
+    if ($sidValue -eq $ownerSidValue) { 'OWNER' }
+    elseif ($sidValue -eq $systemSidValue) { 'SYSTEM' }
+    else { 'OTHER' }
+  } catch { 'UNRESOLVED' }
+})
+if ($rules.Count -ne 2) {
+  $kindCategory = $Kind.ToUpperInvariant()
+  $ownerCount = @($categories | Where-Object { $_ -eq 'OWNER' }).Count
+  $systemCount = @($categories | Where-Object { $_ -eq 'SYSTEM' }).Count
+  $otherCount = @($categories | Where-Object { $_ -ne 'OWNER' -and $_ -ne 'SYSTEM' }).Count
+  throw ("ACL_{0}_RULE_COUNTS_{1}_OWNER_{2}_SYSTEM_{3}_OTHER" -f $kindCategory, $rules.Count, $ownerCount, $systemCount, $otherCount)
+}
 if (@($rules | Where-Object { $_.Identity -notin $expected -or $_.Rights -ne $expectedRights }).Count -ne 0) { throw 'ACL_RULE_MISMATCH' }
 if (@($rules | Select-Object -ExpandProperty Identity -Unique).Count -ne 2) { throw 'ACL_DUPLICATE_PRINCIPAL' }
