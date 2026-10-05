@@ -9,7 +9,7 @@
 
 2026-10-04の最終ハードニングで確認したロール判定のP1は、本番コード配置後の新Invocationで有効化した。外部Healthchecksの成功pingと通知先は運営者がダッシュボードで確認し、WindowsのVM外バックアップ定期タスクは06:00 JSTに登録して手動実行・ハッシュ一致・SQLite整合性を確認した。公開拡大の最終判定は全テストとrelease整合性確認後に行う。
 
-2026-10-05の運用整備では、Oracle/Windowsの実backupを隔離一時領域へ複製し、productionと同じ`requireExisting` DB openおよびservice初期化を通すrestore drillを実施した。両方でintegrity、必須table、件数確認に成功。OneDrive外のEd25519 SSH keyを登録し、sudoとWindows offsite backup taskの成功を確認後にOracleから旧公開鍵を失効し、旧鍵での接続拒否と新鍵での接続を確認した。OneDrive上の旧秘密鍵実体も削除した。Healthchecks endpointは安全な手動probeでHTTP 200。GitHub Actions CIはUbuntu/Windowsとも成功した。運営判断によりPrivacy専用メール窓口は設置せず、データ削除は`/account delete`、個別連携解除は`/unlink`、一般問い合わせ・不具合報告はGitHub Issues（個人情報・認証情報は投稿しない）とする。この方針でのPrivacy/Terms公開同期とbeta.11公開を進める。
+2026-10-05の運用整備では、Oracle/Windowsの実backupを隔離一時領域へ複製し、productionと同じ`requireExisting` DB openおよびservice初期化を通すrestore drillを実施した。両方でintegrity、必須table、件数確認に成功。OneDrive外のEd25519 SSH keyを登録し、sudoとWindows offsite backup taskの成功を確認後にOracleから旧公開鍵を失効し、旧鍵での接続拒否と新鍵での接続を確認した。OneDrive上の旧秘密鍵実体も削除した。Healthchecks endpointは安全な手動probeでHTTP 200。GitHub Actions CIはUbuntu/Windowsとも成功した。運営判断によりPrivacy専用メール窓口は設置せず、データ削除は`/account delete`、個別連携解除は`/unlink`、一般問い合わせ・不具合報告はGitHub Issues（個人情報・認証情報は投稿しない）とする。Cloudflare PagesのLP/Privacy/Termsはproductionへ反映し、3ページともHTTP 200かつローカル原稿との完全一致を確認した。beta.11公開準備が整った。
 
 ## 指摘一覧
 

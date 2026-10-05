@@ -7,7 +7,7 @@
 - [ ] `/help`、`/status`、`/watch status` の表示を確認
 - [x] Oracle/Windows backupの成功履歴と保存世代を確認し、隔離restore drillを完了（[記録](RESTORE_DRILL.md)）
 - [x] 75 GuildでVerification準備、90 Guildで新規導入停止するゲートと既存Guild保持を確認
-- [ ] Privacy/Termsに`/account delete`、`/unlink`、GitHub Issuesと個人情報投稿禁止を明記し、Cloudflare Pagesへ同期（Privacy専用メール窓口は設置しない）
+- [x] Privacy/Termsに`/account delete`、`/unlink`、GitHub Issuesと個人情報投稿禁止を明記し、Cloudflare Pagesへ同期（Privacy専用メール窓口は設置しない）
 - [x] Windows版Botが停止し、Oracle版だけが稼働していることを確認
 
 ## 利用状況（本文を収集しない）
