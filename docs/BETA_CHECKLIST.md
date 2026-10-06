@@ -2,6 +2,9 @@
 
 ## 公開前
 
+- [ ] beta.13: Oracle管理外DB artifactの安全な整理、現行世代backup・隔離restore、Windows暗号化backup、Healthchecks、Ubuntu/Windows CIを再確認
+- [ ] v1.0判断: Windows DPAPI profileとOracleの同時喪失時に独立復旧経路が必要か決定する
+
 - [x] `FREE_LINK_LIMIT=1` を確認
 - [ ] Bot招待URLと必要権限を確認
 - [ ] `/help`、`/status`、`/watch status` の表示を確認

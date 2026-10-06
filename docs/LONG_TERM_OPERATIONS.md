@@ -28,7 +28,7 @@
 | Disk枯渇 | DB保存、ログ、バックアップ失敗 | `df`, backup失敗、systemdログ | Oracle/Windows backupの世代数+暦日cleanup、journald 30日 | disk使用率を定期確認し容量増加を判断 |
 | メモリ不足 | OOM kill、Gateway切断、DB保存失敗 | RSS/cgroup、dmesg、systemd状態 | 1GB VM、Node/systemd制限 | VM増強、全量exportをやめるDB方式、負荷分離 |
 | VM外バックアップ遅延/鍵喪失 | 障害時の復旧点が古くなる、DPAPI keyを失うとencrypted copyを復号不能 | Windows Task Scheduler、Oracle status/generation、36時間Healthchecks stale判定 | Windows PCで毎日06:00 JST、AES-256-GCM/DPAPI、SHA-256・production restore drill、成功/失敗をOracleへ反映 | DPAPI keyを暗号化backupと別に保護し、鍵喪失時はOracle restoreを使う。PC停止中は取得・物理削除が遅れる |
-| アカウント削除後の旧backup | 削除済みデータがrestoreで再出現 | privacy generation、cleanup pending、offsite generation比較 | 削除前Oracle backupは検証済みpost-delete backup作成後に削除し、古いWindows backupはgeneration mismatchでrestore拒否・次回online cleanup | pendingで停止した場合は削除確定状態を保ち、次回日次backupで再試行。個人IDはepochへ保存しない |
+| アカウント削除後の旧backup | 削除済みデータがrestoreで再出現 | privacy generation、cleanup pending、offsite generation比較 | 削除前Oracle backupと既知の旧コピーは検証済みpost-delete backup作成後に削除し、古いWindows backupはgeneration mismatchでrestore拒否・次回online cleanup | pendingで停止した場合は削除確定済みのみ次回起動時に安全なbackupと整理を再試行。不確実なpendingでは起動停止。個人IDはepochへ保存しない |
 | Token漏洩 | Bot乗っ取り | 不審Gateway、権限/サーバー変化 | Token非表示入力・ログ/ Git除外 | 定期rotation、権限最小化、監査手順 |
 | Discord API仕様変更 | 受信フィールド/権限判定の変化 | Gateway close、テスト失敗、通知率低下 | Message Content非依存、公式仕様確認 | 依存更新前のモック/実機回帰、変更ログ監視 |
 | npm依存更新 | 起動/API挙動の変化 | check/test/build/audit、再起動失敗 | lockfile固定、CI相当のローカル検証 | 定期更新、段階的デプロイ、rollback手順 |
@@ -48,6 +48,9 @@
 - 75 Guildで始めたVerification準備が完了しないまま拡大が必要になる、または90 Guildに達する
 
 ## 現行監視・保持の運用境界
+
+- beta.13: 予期しないMessageCreate通知判定失敗は直近15分に1件でHealthchecksを異常にし、時刻のみの状態を再起動後も保持する。保存失敗はDBをpoisonedにしてfail-stopする。`/account delete`はディスク上の削除と現行世代backupを確認した後、固定allowlist内の旧Oracle DB artifactを削除する。privacy pendingの自動完了はdisk削除確定済みの状態だけに限定する。
+- DPAPI CurrentUser鍵はWindows profileに依存する。profile単独喪失ならOracle現行世代backupを復旧元にできるが、Oracleとprofileを同時喪失すると暗号化済みWindows copyは復号不能。Oracleに復号鍵を置く方式はoffsite分離を損なうため採用せず、独立した復旧経路をv1.0 gateとして残す。
 
 - Healthchecksは全Shard Gateway Ready、pending/processing数、failed数（15分）、最古due queue age（5分）を見てheartbeatまたはfailを送る。Windows VM外backupは状態ファイルの明示失敗または最終成功36時間超をfailとする。
 - Oracle backupは最新7世代かつ14日以内、Windows VM外backupはAES-GCM暗号化後の最新14世代かつ30日以内。日次処理で期限超過分を削除し、Windows PC停止中は物理削除が次回実行まで遅れる。削除前backupはprivacy generation不一致で通常restore候補から除外する。

@@ -94,14 +94,9 @@ export function advancePrivacyState(directory = PRIVACY_STATE_DIRECTORY, now = D
   if (!Number.isSafeInteger(now) || now <= 0) throw new Error("invalid deletion timestamp");
   const previous = readPrivacyState(directory);
   if (previous.cleanupPending) {
-    // A prior deletion may have committed its DB transaction but failed while
-    // writing the post-delete backup. If another account is now being deleted,
-    // clear that old confirmation before touching the DB so a timer cannot
-    // finalize a snapshot taken before this new deletion.
-    if (!previous.databaseDeleted) return previous;
-    const retry = { ...previous, databaseDeleted: false };
-    atomicWriteState(directory, retry, options);
-    return retry;
+    // A pending epoch cannot be assigned to another user. Startup resumes
+    // only a previously disk-confirmed deletion; uncertain ones stay closed.
+    throw new Error("privacy deletion pending");
   }
   if (previous.generation >= Number.MAX_SAFE_INTEGER) throw new Error("privacy deletion generation exhausted");
   const next = { generation: previous.generation + 1, lastDeletionAt: Math.max(now, previous.lastDeletionAt + 1), cleanupPending: true, databaseDeleted: false };
@@ -136,8 +131,8 @@ function sqliteIntegrity(file) {
   try {
     const integrity = database.exec("PRAGMA integrity_check");
     if (integrity.length !== 1 || integrity[0]?.values.length !== 1 || integrity[0].values[0]?.[0] !== "ok") throw new Error("backup integrity failed");
-    const tables = database.exec("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('main_accounts','account_links','notification_queue')");
-    if (tables[0]?.values.length !== 3) throw new Error("backup schema invalid");
+    const tables = new Set(database.exec("SELECT name FROM sqlite_master WHERE type='table'")[0]?.values.map((row) => String(row[0])) ?? []);
+    if (["main_accounts", "account_links", "notification_queue", "notification_dedup", "guild_watches", "entitlements"].some((table) => !tables.has(table))) throw new Error("backup schema invalid");
   } finally { database.close(); }
 }
 

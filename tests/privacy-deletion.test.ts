@@ -7,7 +7,8 @@ describe("privacy deletion ordering", () => {
     const accounts = {
       setPrivacyDeletionActive: () => undefined,
       hasDataForUser: () => true,
-      deleteAccount: () => { order.push("db-delete"); return "sub" as const; }
+      deleteAccount: () => { order.push("db-delete"); return "sub" as const; },
+      verifyDeletedOnDisk: async () => { order.push("disk-verify"); }
     };
     const service = new PrivacyDeletionService(accounts as never, {
       begin: async () => { order.push("epoch-advance"); },
@@ -15,12 +16,12 @@ describe("privacy deletion ordering", () => {
       finish: async () => { order.push("safe-backup-and-prune"); }
     });
     await expect(service.deleteAccount("opaque-test-user")).resolves.toBe("sub");
-    expect(order).toEqual(["epoch-advance", "db-delete", "db-delete-committed", "safe-backup-and-prune"]);
+    expect(order).toEqual(["epoch-advance", "db-delete", "disk-verify", "db-delete-committed", "safe-backup-and-prune"]);
   });
 
   it("does not run the DB delete if advancing the privacy state fails", async () => {
     const remove = vi.fn();
-    const service = new PrivacyDeletionService({ setPrivacyDeletionActive: () => undefined, hasDataForUser: () => true, deleteAccount: remove } as never, {
+    const service = new PrivacyDeletionService({ setPrivacyDeletionActive: () => undefined, hasDataForUser: () => true, deleteAccount: remove, verifyDeletedOnDisk: async () => undefined } as never, {
       begin: async () => { throw new Error("state unavailable"); }, databaseDeleted: async () => undefined, finish: async () => undefined
     });
     await expect(service.deleteAccount("user")).rejects.toThrow("state unavailable");
@@ -29,20 +30,20 @@ describe("privacy deletion ordering", () => {
 
   it("does not report completion when backup maintenance fails after active deletion", async () => {
     const remove = vi.fn(() => "main" as const);
-    const service = new PrivacyDeletionService({ setPrivacyDeletionActive: () => undefined, hasDataForUser: () => true, deleteAccount: remove } as never, {
+    const service = new PrivacyDeletionService({ setPrivacyDeletionActive: () => undefined, hasDataForUser: () => true, deleteAccount: remove, verifyDeletedOnDisk: async () => undefined } as never, {
       begin: async () => undefined, databaseDeleted: async () => undefined, finish: async () => { throw new Error("backup cleanup failed"); }
     });
     await expect(service.deleteAccount("user")).rejects.toThrow("backup cleanup failed");
     expect(remove).toHaveBeenCalledOnce();
   });
 
-  it("finishes an earlier pending deletion after active rows are already gone", async () => {
+  it("does not certify an unrelated pending deletion from a no-data request", async () => {
     const order: string[] = [];
     const service = new PrivacyDeletionService({ setPrivacyDeletionActive: () => undefined, hasDataForUser: () => false, deleteAccount: () => { order.push("check-active"); return "none" as const; } } as never, {
       begin: async () => { order.push("begin"); }, databaseDeleted: async () => { order.push("db-delete-committed"); }, finish: async () => { order.push("finish-if-pending"); }
     });
     await expect(service.deleteAccount("user")).resolves.toBe("none");
-    expect(order).toEqual(["db-delete-committed", "finish-if-pending", "check-active"]);
+    expect(order).toEqual([]);
   });
 
   it("serializes overlapping account deletions across the backup window", async () => {
@@ -53,7 +54,8 @@ describe("privacy deletion ordering", () => {
     const accounts = {
       setPrivacyDeletionActive: () => undefined,
       hasDataForUser: () => true,
-      deleteAccount: (userId: string) => { order.push(`delete:${userId}`); if (userId === "first") hasFirst = false; return "sub" as const; }
+      deleteAccount: (userId: string) => { order.push(`delete:${userId}`); if (userId === "first") hasFirst = false; return "sub" as const; },
+      verifyDeletedOnDisk: async () => undefined
     };
     const service = new PrivacyDeletionService(accounts as never, {
       begin: async () => { order.push("begin"); if (order.filter((entry) => entry === "begin").length === 1) await firstGate; },

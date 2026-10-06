@@ -28,7 +28,7 @@ function nameFor(timestamp) {
 }
 async function createDatabase(file) {
   const SQL = await initSqlJs(); const db = new SQL.Database();
-  db.run("CREATE TABLE main_accounts(user_id TEXT PRIMARY KEY,username TEXT,created_at INTEGER); CREATE TABLE account_links(sub_user_id TEXT PRIMARY KEY,main_user_id TEXT,username TEXT,created_at INTEGER); CREATE TABLE notification_queue(id INTEGER PRIMARY KEY,status TEXT)");
+  db.run("CREATE TABLE main_accounts(user_id TEXT PRIMARY KEY,username TEXT,created_at INTEGER); CREATE TABLE account_links(sub_user_id TEXT PRIMARY KEY,main_user_id TEXT,username TEXT,created_at INTEGER); CREATE TABLE notification_queue(id INTEGER PRIMARY KEY,status TEXT); CREATE TABLE notification_dedup(main_user_id TEXT); CREATE TABLE guild_watches(sub_user_id TEXT); CREATE TABLE entitlements(user_id TEXT)");
   fs.writeFileSync(file, Buffer.from(db.export())); db.close();
 }
 
@@ -41,18 +41,17 @@ describe("privacy deletion state and Oracle backup epochs", () => {
     expect(initializePrivacyState(state)).toEqual(initial);
     expect(markPrivacyDataDeleted(state)).toEqual(initial);
     const first = advancePrivacyState(state, 100);
-    const repeat = advancePrivacyState(state, 50);
+    expect(() => advancePrivacyState(state, 50)).toThrow("privacy deletion pending");
     expect(first).toEqual({ generation: 1, lastDeletionAt: 100, cleanupPending: true, databaseDeleted: false });
-    expect(repeat).toEqual(first);
     expect(JSON.stringify(readPrivacyState(state))).not.toMatch(/user|username|snowflake/i);
   });
 
-  it("clears a prior DB-deleted confirmation before starting another deletion in the pending epoch", () => {
+  it("never assigns a pending epoch to another deletion", () => {
     const { state } = fixture(); initializePrivacyState(state);
     const pending = advancePrivacyState(state, 100);
     expect(markPrivacyDataDeleted(state)).toMatchObject({ generation: 1, cleanupPending: true, databaseDeleted: true });
-    expect(advancePrivacyState(state, 200)).toEqual({ ...pending, databaseDeleted: false });
-    expect(readPrivacyState(state).databaseDeleted).toBe(false);
+    expect(() => advancePrivacyState(state, 200)).toThrow("privacy deletion pending");
+    expect(readPrivacyState(state)).toEqual({ ...pending, databaseDeleted: true });
   });
 
   it("fails closed for missing, malformed, inconsistent, and symlink state", () => {

@@ -93,6 +93,16 @@ describe("runtime heartbeat default request", () => {
     await expect(runtimeHeartbeat(url).check(true)).resolves.toMatchObject({ healthy: true, requestSent: true, reason: "ok" });
   });
 
+  it("uses a TLS-verified IPv4 retry only after a transport failure", async () => {
+    const url = await listen(createHttpsServer({ key: readFileSync(key), cert: readFileSync(cert) }, (_request, response) => {
+      response.writeHead(204); response.end();
+    }), "https");
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async () => { throw new TypeError("simulated address timeout"); });
+    try { await expect(runtimeHeartbeat(url).check(true)).resolves.toMatchObject({ healthy: true, requestSent: true }); }
+    finally { vi.stubGlobal("fetch", originalFetch); }
+  });
+
   it.each([404, 503])("rejects a direct HTTP %i", async (status) => {
     const url = await listen(createHttpServer((_request, response) => {
       response.writeHead(status);

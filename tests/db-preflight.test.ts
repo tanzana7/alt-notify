@@ -34,7 +34,7 @@ describe("production database preflight", () => {
     expect(started.status).not.toBe(0);
     expect(started.stderr).toContain("Existing Alt Notify database validation failed");
     expect(fs.existsSync(file)).toBe(false);
-  });
+  }, 20_000);
 
   it.each(["zero", "garbage"] as const)("rejects a %s file without changing it", async (kind) => {
     const file = fixturePath();

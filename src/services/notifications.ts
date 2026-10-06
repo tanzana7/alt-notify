@@ -11,7 +11,11 @@ export type AccessDecision = { kind: "allowed" } | { kind: "denied"; reason?: st
 export type AccessCheck = boolean | AccessDecision;
 export type RoleAccessCheck = string[] | AccessDecision;
 export interface GuildVisibility { isMember(userId: string): Promise<AccessCheck>; getMemberRoleIds?(userId: string): Promise<RoleAccessCheck>; refreshMemberRoleIds?(userId: string): Promise<RoleAccessCheck>; canViewChannel(userId: string): Promise<AccessCheck>; }
-export interface NotificationSender { send(mainUserId: string, content: string, nonce: string, beforeSend: () => boolean): Promise<boolean | void>; }
+export interface PreparedNotificationSender { send(content: string, nonce: string, beforeSend: () => boolean): Promise<boolean | void>; }
+export interface NotificationSender {
+  prepare?(mainUserId: string): Promise<PreparedNotificationSender>;
+  send(mainUserId: string, content: string, nonce: string, beforeSend: () => boolean): Promise<boolean | void>;
+}
 export interface NotificationDisplayNames { guildName?: string; channelName?: string; }
 export type NotificationDisplayNameResolver = (guildId: string, channelId: string) => NotificationDisplayNames;
 export interface AuthorizedTarget { userId: string; label: string; kind?: MentionKind; }
@@ -222,9 +226,6 @@ export class NotificationService {
       if (lastSentAt !== undefined && Math.max(now, this.now()) - lastSentAt < minIntervalMs) continue;
       const claim = this.db.raw.prepare("UPDATE notification_queue SET status='processing', attempts=attempts+1 WHERE id=? AND status='pending'").run(row.id);
       if (claim.changes !== 1) continue;
-      let targetIds = JSON.parse(String(row.target_user_ids)) as string[];
-      let labels = JSON.parse(String(row.target_labels)) as string[];
-      let authorizedById: Map<string, { label: string; kind?: MentionKind | undefined }> | undefined;
       const deferAuthorization = (decision: Extract<AuthorizationDecision, { kind: "retry" }>): void => {
         // One queue claim is one authorization-budget unit. A temporary fresh
         // check on a DM retry returns to the queue rather than sending blind.
@@ -238,7 +239,7 @@ export class NotificationService {
         }
       };
       const freshAuthorization = async (currentIds: string[], currentKinds: TargetMentionKind[]): Promise<AuthorizationDecision> => {
-        if (!authorization) return { kind: "authorized", targets: currentIds.map((userId, index) => ({ userId, label: labels[index] ?? userId })) };
+        if (!authorization) return { kind: "authorized", targets: currentIds.map((userId) => ({ userId, label: userId })) };
         try {
           const result = await authorization.authorize({ mainUserId: String(row.main_user_id), guildId: String(row.guild_id), channelId: String(row.channel_id ?? ""), kind: row.mention_type as MentionKind, targetUserIds: currentIds, targetKinds: currentKinds, mentionedRoleIds: JSON.parse(String(row.target_role_ids ?? "[]")) as string[] });
           return Array.isArray(result) ? { kind: "authorized", targets: result } : result;
@@ -247,49 +248,20 @@ export class NotificationService {
           return failure.kind === "temporary" ? { kind: "retry", reason: failure.reason, ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}) } : { kind: "authorized", targets: [] };
         }
       };
-      if (authorization) {
-        const decision = await freshAuthorization(targetIds, JSON.parse(String(row.target_kinds ?? "[]")) as TargetMentionKind[]);
-        if (decision.kind === "retry") {
-          deferAuthorization(decision);
-          continue;
-        }
-        const authorizedTargets = new Map(decision.targets.map((target) => [target.userId, { label: target.label, kind: target.kind }]));
-        authorizedById = authorizedTargets;
-        targetIds = targetIds.filter((userId) => authorizedTargets.has(userId));
-        labels = targetIds.map((userId) => authorizedTargets.get(userId)?.label ?? userId);
-        if (targetIds.length === 0) {
-          this.db.raw.prepare("UPDATE notification_queue SET status='cancelled', last_error='authorization revoked before send' WHERE id=? AND status='processing'").run(row.id);
-          continue;
-        }
-        const verifiedKinds = decision.targets.filter((target) => targetIds.includes(target.userId)).map((target) => target.kind);
-        if (verifiedKinds.length === targetIds.length && verifiedKinds.every((kind): kind is MentionKind => kind !== undefined)) {
-          deliveryKind = verifiedKinds.reduce((best, kind) => mentionPriority(kind) < mentionPriority(best) ? kind : best, "everyone" as MentionKind);
-        }
-        if (deliveryKind === "everyone" && now < Number(row.created_at) + 60_000) {
-          // The row is now an everyone notification for queue priority and
-          // capacity eviction, even though target_kinds retains the role
-          // candidate for a fresh authorization at delivery time.
-          this.db.raw.prepare("UPDATE notification_queue SET kind='everyone', mention_type='everyone', status='pending', available_at=?, attempts=attempts-1 WHERE id=? AND status='processing'").run(Number(row.created_at) + 60_000, row.id);
-          continue;
-        }
-      }
       let displayNames: NotificationDisplayNames = {};
       try { displayNames = this.resolveDisplayNames?.(String(row.guild_id), String(row.channel_id ?? "")) ?? {}; }
       catch (error) { this.logger.warn("notification display name lookup failed", { queueId: row.id, error: error instanceof Error ? error.message : "unknown" }); }
       try {
         const nonce = notificationNonce(row);
         const delivered = await this.sendWithRetry(async (sendAttempt) => {
-          if (sendAttempt > 0 && authorization) {
-            // The first attempt used the fresh check above. Only a retry needs
-            // another Discord fetch; otherwise an in-flight REST failure could
-            // outlive a membership, role or channel-permission change.
+          // Fetch the destination before checking the sub-account's current
+          // Discord access. No destination fetch may reopen that privacy window.
+          const prepared = sender.prepare ? await sender.prepare(String(row.main_user_id)) : undefined;
+          let authorizedById: Map<string, { label: string; kind?: MentionKind | undefined }> | undefined;
+          if (authorization) {
             const current = this.db.raw.prepare("SELECT target_user_ids, target_kinds FROM notification_queue WHERE id=? AND status='processing'").get(row.id) as { target_user_ids: string; target_kinds: string } | undefined;
             if (!current) return false;
             const currentIds = JSON.parse(current.target_user_ids) as string[];
-            if (!currentIds.some((userId) => this.accounts.isNotificationTargetActive(String(row.main_user_id), userId, String(row.guild_id)))) {
-              this.db.raw.prepare("UPDATE notification_queue SET status='cancelled', last_error='target inactive before send' WHERE id=? AND status='processing'").run(row.id);
-              return false;
-            }
             const decision = await freshAuthorization(currentIds, JSON.parse(current.target_kinds) as TargetMentionKind[]);
             if (decision.kind === "retry") throw new AuthorizationRetryError(decision);
             authorizedById = new Map(decision.targets.map((target) => [target.userId, { label: target.label, kind: target.kind }]));
@@ -337,7 +309,8 @@ export class NotificationService {
             if (!current || current.status !== "processing" || current.target_user_ids !== active.targetIdsJson) return false;
             return active.targetIds.every((userId) => this.accounts.isNotificationTargetActive(String(row.main_user_id), userId, String(row.guild_id)));
           };
-          return sender.send(String(row.main_user_id), content, nonce, beforeSend).then((didSend) => didSend !== false);
+          const send = prepared ? prepared.send(content, nonce, beforeSend) : sender.send(String(row.main_user_id), content, nonce, beforeSend);
+          return send.then((didSend) => didSend !== false);
         });
         if (!delivered) {
           // A grouped row can retain another valid target after unlink/delete.

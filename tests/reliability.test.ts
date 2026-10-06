@@ -12,6 +12,7 @@ import { HealthcheckService } from "../src/services/healthcheck.js";
 import { MemberCache } from "../src/services/member-cache.js";
 import { createMessageVisibility } from "../src/services/message-visibility.js";
 import { NotificationService, type IncomingMessage } from "../src/services/notifications.js";
+import { createDiscordNotificationSender } from "../src/services/discord-notification-sender.js";
 import { SingleFlight } from "../src/services/single-flight.js";
 import { UserFacingError, userMessageForError } from "../src/services/user-error.js";
 import { WatchService, memberAccessForWatch } from "../src/services/watches.js";
@@ -358,6 +359,41 @@ describe("role candidates survive temporary Discord failures", () => {
     await state.notifications.inspect(next, visible);
     expect(state.db.raw.prepare("SELECT status,last_error FROM notification_queue WHERE message_id=?").get(`fallback-before-${incoming}`)).toMatchObject({ status: "failed", last_error: `evicted by ${incoming} mention priority` });
     expect(state.db.raw.prepare("SELECT status,mention_type FROM notification_queue WHERE message_id=?").get(`incoming-${incoming}`)).toMatchObject({ status: "pending", mention_type: incoming });
+  });
+});
+
+describe("destination fetch before fresh authorization", () => {
+  it.each(["departure", "role removal", "channel permission removal"] as const)("suppresses send after %s during a delayed destination fetch", async (change) => {
+    const state = await setup();
+    const message = change === "role removal" ? roleMessage(`prepare-${change}`) : { id: `prepare-${change}`, guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["sub"], mentionEveryone: false };
+    await state.notifications.inspect(message, { isMember: async () => true, getMemberRoleIds: async () => ["role-a"], canViewChannel: async () => true });
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const fetchStarted = new Promise<void>((resolve) => { started = resolve; });
+    let left = false; let hasRole = true; let canView = true; let sends = 0; let checks = 0;
+    const channel = { permissionsFor: () => ({ has: () => canView }) };
+    const fresh = freshClient(async () => channel, async () => { checks++; if (left) throw { status: 404, code: 10007 }; return memberWithRoles(hasRole ? ["role-a"] : []); });
+    const sender = createDiscordNotificationSender({ fetch: async () => { started(); await gate; return { send: async () => { sends++; } }; } } as never);
+    const draining = state.notifications.drain(sender, 1_000, 50, { authorize: (input) => authorizeQueuedNotification(fresh.client, state.accounts, input) });
+    await fetchStarted;
+    expect(checks).toBe(0);
+    if (change === "departure") left = true;
+    if (change === "role removal") hasRole = false;
+    if (change === "channel permission removal") canView = false;
+    release(); await draining;
+    expect(sends).toBe(0);
+    if (change !== "channel permission removal") expect(checks).toBeGreaterThan(0);
+  });
+
+  it("starts exactly one DM after prepare, authorization and synchronous guard", async () => {
+    const state = await setup();
+    await state.notifications.inspect({ id: "prepare-ok", guildId: "guild", channelId: "channel", authorBot: false, mentionedUserIds: ["sub"], mentionEveryone: false }, { isMember: async () => true, canViewChannel: async () => true });
+    const order: string[] = [];
+    const sender = createDiscordNotificationSender({ fetch: async () => { order.push("prepare"); return { send: () => { order.push("send-start"); return Promise.resolve(); } }; } } as never);
+    await state.notifications.drain(sender, 1_000, 50, { authorize: async () => { order.push("fresh-authorize"); return [{ userId: "sub", label: "Sub", kind: "direct" }]; } });
+    expect(order).toEqual(["prepare", "fresh-authorize", "send-start"]);
+    expect(state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='prepare-ok'").get()?.status).toBe("sent");
   });
 });
 

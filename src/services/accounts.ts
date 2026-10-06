@@ -162,6 +162,8 @@ export class AccountService {
     });
   }
 
+  public verifyDeletedOnDisk(userId: string): Promise<void> { return this.db.verifyUserDeletedOnDisk(userId); }
+
   /** Refreshes only the caller's mutable display fields; IDs and lifecycle data remain untouched. */
   public refreshDisplayData(userId: string, username: string, displayName: string): boolean {
     if (!userId || !username || !displayName) throw new UserFacingError("現在のDiscordアカウント情報を取得できませんでした");

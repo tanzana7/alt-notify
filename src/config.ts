@@ -17,6 +17,7 @@ const envSchema = z.object({
   HEALTHCHECKS_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().min(30_000).max(3_600_000).default(60_000),
   HEALTHCHECKS_MAX_PENDING_QUEUE: z.coerce.number().int().min(1).max(100_000).default(200),
   HEALTHCHECKS_MAX_FAILURES_15M: z.coerce.number().int().min(1).max(10_000).default(5),
+  HEALTHCHECKS_MAX_INSPECTION_FAILURES_15M: z.coerce.number().int().min(1).max(10_000).default(1),
   HEALTHCHECKS_MAX_QUEUE_AGE_MS: z.coerce.number().int().min(30_000).max(86_400_000).default(300_000),
   HEALTHCHECKS_MAX_OFFSITE_BACKUP_AGE_MS: z.coerce.number().int().min(3_600_000).max(30 * 86_400_000).default(129_600_000),
   HEALTHCHECKS_OFFSITE_STATUS_PATH: z.string().min(1).default("/var/lib/altnoti-monitoring/offsite-backup-status.json"),

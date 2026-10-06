@@ -76,6 +76,7 @@ describe("Windows offsite backup status monitoring", () => {
     expect(config.HEALTHCHECKS_OFFSITE_STATUS_PATH).toBe("/var/lib/altnoti-monitoring/offsite-backup-status.json");
     expect(config.PRIVACY_DELETION_STATE_PATH).toBe("/var/lib/altnoti-monitoring/privacy-deletion-state.json");
     expect(config.HEALTHCHECKS_MAX_OFFSITE_BACKUP_AGE_MS).toBe(129_600_000);
+    expect(config.HEALTHCHECKS_MAX_INSPECTION_FAILURES_15M).toBe(1);
   });
 
   it("accepts a fresh successful backup", async () => {

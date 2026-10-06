@@ -11,25 +11,31 @@ export class PrivacyDeletionService {
   private tail: Promise<void> = Promise.resolve();
   private readonly activeUsers = new Map<string, number>();
 
-  public constructor(private readonly accounts: AccountService, private readonly maintenance: PrivacyDeletionMaintenance) {}
+  public constructor(private readonly accounts: AccountService, private readonly maintenance: PrivacyDeletionMaintenance, private readonly onUnsafeFailure?: () => void) {}
 
   public deleteAccount(userId: string): Promise<"main" | "sub" | "none"> {
     this.accounts.setPrivacyDeletionActive(userId, true);
     this.activeUsers.set(userId, (this.activeUsers.get(userId) ?? 0) + 1);
     const operation = this.tail.then(async () => {
       if (!this.accounts.hasDataForUser(userId)) {
-        // A prior deletion may have removed active rows but failed while
-        // producing the post-deletion backup. finish() is idempotent and
-        // completes that privacy maintenance without retaining a user ID.
+        // A pending epoch has no user identity. Only startup may resume an
+        // already disk-confirmed epoch; an unrelated no-data request must not
+        // certify another user's failed deletion.
+        return "none";
+      }
+      try {
+        await this.maintenance.begin();
+        const result = this.accounts.deleteAccount(userId);
+        await this.accounts.verifyDeletedOnDisk(userId);
         await this.maintenance.databaseDeleted();
         await this.maintenance.finish();
-        return this.accounts.deleteAccount(userId);
+        return result;
+      } catch (error) {
+        // begin may have advanced the root-owned epoch before reporting an
+        // error. Stop serving until startup can inspect its durable state.
+        this.onUnsafeFailure?.();
+        throw error;
       }
-      await this.maintenance.begin();
-      const result = this.accounts.deleteAccount(userId);
-      await this.maintenance.databaseDeleted();
-      await this.maintenance.finish();
-      return result;
     }).finally(() => {
       const remaining = (this.activeUsers.get(userId) ?? 1) - 1;
       if (remaining <= 0) { this.activeUsers.delete(userId); this.accounts.setPrivacyDeletionActive(userId, false); }

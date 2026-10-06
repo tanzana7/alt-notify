@@ -35,20 +35,41 @@ import { cancelAccountDeletion } from "./services/account-delete-button.js";
 import { createDiscordNotificationSender } from "./services/discord-notification-sender.js";
 import { getGuildGateState, shouldLeaveNewGuild } from "./services/guild-gate.js";
 import { PrivacyDeletionService } from "./services/privacy-deletion.js";
+import { InspectionFailures } from "./services/inspection-failures.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import path from "node:path";
 
 const config = loadConfig();
 const logger = new Logger(config.LOG_LEVEL);
-const db = await SqliteDatabase.open(config.DATABASE_PATH, { requireExisting: true });
+const executeFile = promisify(execFile);
+let fatalExitScheduled = false;
+let disconnectGateway: () => void = () => undefined;
+function failStopDatabase(): void {
+  if (fatalExitScheduled) return;
+  fatalExitScheduled = true;
+  process.exitCode = 1;
+  logger.error("database durability or privacy maintenance uncertain; stopping");
+  // This does not call db.close(): a poisoned in-memory DB must never be
+  // written over the last known durable image during graceful shutdown.
+  disconnectGateway();
+  setImmediate(() => process.exit(1));
+}
+const db = await SqliteDatabase.open(config.DATABASE_PATH, { requireExisting: true, onFatalPersistenceError: failStopDatabase });
+const privacyStatus = JSON.parse((await executeFile("sudo", ["-n", "/usr/local/sbin/altnoti-privacy", "status"], { timeout: 15_000 })).stdout) as { cleanupPending?: boolean; databaseDeleted?: boolean };
+if (typeof privacyStatus.cleanupPending !== "boolean" || typeof privacyStatus.databaseDeleted !== "boolean") throw new Error("Privacy deletion state invalid; service not started");
+if (privacyStatus.cleanupPending) {
+  if (privacyStatus.databaseDeleted !== true) throw new Error("Privacy deletion remains unconfirmed; service not started");
+  // Only a deletion already confirmed against the disk DB may be resumed.
+  await executeFile("sudo", ["-n", "/usr/local/sbin/altnoti-privacy", "finish"], { timeout: 90_000 });
+}
 db.cleanup();
 const accounts = new AccountService(db, config.DEVELOPER_TEST_DISCORD_ID, config.LINK_CODE_PEPPER, config.FREE_LINK_LIMIT);
-const executeFile = promisify(execFile);
 const privacyDeletion = new PrivacyDeletionService(accounts, {
   async begin() { await executeFile("sudo", ["-n", "/usr/local/sbin/altnoti-privacy", "begin"], { timeout: 15_000 }); },
   async databaseDeleted() { await executeFile("sudo", ["-n", "/usr/local/sbin/altnoti-privacy", "database-deleted"], { timeout: 15_000 }); },
   async finish() { await executeFile("sudo", ["-n", "/usr/local/sbin/altnoti-privacy", "finish"], { timeout: 90_000 }); }
-});
+}, failStopDatabase);
 const watches = new WatchService(db, accounts);
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages],
@@ -71,12 +92,16 @@ const notifications = new NotificationService(
     };
   }
 );
+const inspectionFailures = new InspectionFailures(path.join(path.dirname(config.DATABASE_PATH), "inspection-failures.json"));
 const healthchecks = new HealthcheckService(db, logger, config.HEALTHCHECKS_HEARTBEAT_URL, config.HEALTHCHECKS_MAX_PENDING_QUEUE, config.HEALTHCHECKS_MAX_FAILURES_15M, undefined, undefined, {
   maxQueueAgeMs: config.HEALTHCHECKS_MAX_QUEUE_AGE_MS,
   maxOffsiteBackupAgeMs: config.HEALTHCHECKS_MAX_OFFSITE_BACKUP_AGE_MS,
   offsiteStatusPath: config.HEALTHCHECKS_OFFSITE_STATUS_PATH,
-  privacyDeletionStatePath: config.PRIVACY_DELETION_STATE_PATH
+  privacyDeletionStatePath: config.PRIVACY_DELETION_STATE_PATH,
+  maxInspectionFailuresIn15m: config.HEALTHCHECKS_MAX_INSPECTION_FAILURES_15M,
+  inspectionFailures
 });
+disconnectGateway = () => { void client.destroy(); };
 const pendingApprovals = new ApprovalStore();
 const pendingDeletions = new ApprovalStore();
 const memberCache = new MemberCache<GuildMember>(5_000);
@@ -267,7 +292,12 @@ client.on(Events.MessageCreate, async (message) => {
     const labels = new Map(mentionedUserIds.map((id) => [id, message.mentions.users.get(id)?.globalName ?? message.mentions.users.get(id)?.username ?? id]));
     if (!message.mentions.everyone && mentionedUserIds.length === 0 && mentionedRoleIds.length === 0) return;
     await notifications.inspect({ id: message.id, guildId: message.guild.id, channelId: message.channelId, authorBot: message.author.bot, mentionedUserIds, mentionedRoleIds, mentionEveryone: message.mentions.everyone }, createMessageVisibility(message, memberCache), labels);
-  } catch (error) { logger.error("message inspection failed", { error: error instanceof Error ? error.message : "unknown" }); }
+  } catch (error) {
+    logger.error("message inspection failed", { errorName: error instanceof Error ? error.name : "unknown" });
+    try { logger.warn("message inspection failure recorded", { inspectionFailuresIn15m: inspectionFailures.record() }); }
+    catch { failStopDatabase(); return; }
+    void healthchecks.check(isGatewayReady(client));
+  }
 });
 
 const notificationSender = createDiscordNotificationSender(client.users);

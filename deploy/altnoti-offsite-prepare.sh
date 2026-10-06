@@ -26,6 +26,10 @@ if [[ ${1:-} == mark-success ]]; then
   node -e 'const m=JSON.parse(process.argv[1]); if(m.sha256!==process.argv[2] || String(m.privacyGeneration)!==process.argv[3]) process.exit(1)' "$verified" "$hash" "$generation"
   state=$(node "$privacy_helper" status)
   node -e 'const s=JSON.parse(process.argv[1]); if(s.cleanupPending || String(s.generation)!==process.argv[2]) process.exit(1)' "$state" "$generation"
+  # Windows has already verified the encrypted copy and in-memory restore.
+  # Remove the VM plaintext stage before reporting external backup success.
+  rm -- "$stage"
+  rm -f -- "$stage.meta.json"
   exec node "$status_helper" mark-success "$generation"
 fi
 if [[ ${1:-} == status ]]; then
@@ -44,10 +48,13 @@ hash=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).sha256)' "$meta
 generation=$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).privacyGeneration))' "$metadata")
 
 install -d -o ubuntu -g ubuntu -m 700 "$staging_dir"
+# An interrupted Windows transfer can miss its finally cleanup. Restrict
+# stale collection to this dedicated directory and regular named stages.
 find "$staging_dir" -maxdepth 1 -type f -name 'discord-alt-notify-*.sqlite*' -mtime +1 -delete
 source="$backup_dir/$name"
 stage="$staging_dir/$name"
 [[ -f $source && ! -L $source && ! -e $stage ]] || { echo 'backup staging source invalid' >&2; exit 1; }
+trap 'status=$?; if (( status != 0 )); then rm -f -- "$stage" "$stage.meta.json"; fi' EXIT
 install -o ubuntu -g ubuntu -m 600 "$source" "$stage"
 actual=$(sha256sum "$stage"); [[ ${actual%% *} == "$hash" ]] || { rm -f -- "$stage"; echo 'staging hash mismatch' >&2; exit 1; }
 created=$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).createdAt))' "$metadata")

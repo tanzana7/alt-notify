@@ -1,11 +1,13 @@
 import type { SqliteDatabase } from "../db.js";
 import type { Logger } from "../logger.js";
 import { lstatSync, readFileSync } from "node:fs";
+import http from "node:http";
+import https from "node:https";
 
-export interface HealthSnapshot { pending: number; failedIn15m: number; oldestDueAgeMs: number; offsiteBackupState: "disabled" | "ok" | "failed" | "missing" | "invalid"; offsiteBackupAgeMs: number | null; offsitePrivacyGeneration: number | null; privacyDeletionState: "disabled" | "ok" | "pending" | "missing" | "invalid"; privacyGeneration: number | null; }
+export interface HealthSnapshot { pending: number; failedIn15m: number; inspectionFailuresIn15m: number; oldestDueAgeMs: number; offsiteBackupState: "disabled" | "ok" | "failed" | "missing" | "invalid"; offsiteBackupAgeMs: number | null; offsitePrivacyGeneration: number | null; privacyDeletionState: "disabled" | "ok" | "pending" | "missing" | "invalid"; privacyGeneration: number | null; }
 export interface HealthcheckResult { enabled: boolean; healthy: boolean; requestSent: boolean; reason: string; snapshot: HealthSnapshot; }
 type HealthcheckRequest = (url: string) => Promise<boolean>;
-interface HealthcheckThresholds { maxQueueAgeMs?: number; maxOffsiteBackupAgeMs?: number; offsiteStatusPath?: string | undefined; privacyDeletionStatePath?: string | undefined; }
+interface HealthcheckThresholds { maxQueueAgeMs?: number; maxOffsiteBackupAgeMs?: number; offsiteStatusPath?: string | undefined; privacyDeletionStatePath?: string | undefined; maxInspectionFailuresIn15m?: number; inspectionFailures?: { count(): number }; }
 
 export class HealthcheckService {
   public constructor(
@@ -17,8 +19,25 @@ export class HealthcheckService {
     private readonly request: HealthcheckRequest = async (url) => {
       // Match the configuration probe: only the configured endpoint's own 2xx
       // may count as a heartbeat; redirects must not leave that trust boundary.
-      const response = await fetch(url, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(5_000) });
-      return response.ok;
+      try {
+        const response = await fetch(url, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(5_000) });
+        return response.ok;
+      } catch {
+        // On this Oracle VM, Node's automatic address selection can time out
+        // for hc-ping.com while IPv4 succeeds. Retry transport failures only,
+        // with TLS verification and redirects still disabled. Never log URL.
+        const target = new URL(url);
+        const client = target.protocol === "https:" ? https : target.protocol === "http:" ? http : undefined;
+        if (!client) return false;
+        return new Promise<boolean>((resolve) => {
+          const request = client.get(target, { family: 4, timeout: 5_000 }, (response) => {
+            response.resume();
+            resolve((response.statusCode ?? 0) >= 200 && (response.statusCode ?? 0) < 300);
+          });
+          request.on("timeout", () => request.destroy());
+          request.on("error", () => resolve(false));
+        });
+      }
     },
     private readonly now = () => Date.now(),
     private readonly thresholds: HealthcheckThresholds = {}
@@ -36,12 +55,12 @@ export class HealthcheckService {
     try {
       const accepted = await this.request(target);
       if (!accepted) throw new Error("healthcheck endpoint rejected request");
-      if (!healthy) this.logger.warn("healthcheck unhealthy", { reason, pending: snapshot.pending, failedIn15m: snapshot.failedIn15m, oldestDueAgeMs: snapshot.oldestDueAgeMs, offsiteBackupState: snapshot.offsiteBackupState, offsiteBackupAgeMs: snapshot.offsiteBackupAgeMs });
+      if (!healthy) this.logger.warn("healthcheck unhealthy", { reason, pending: snapshot.pending, failedIn15m: snapshot.failedIn15m, inspectionFailuresIn15m: snapshot.inspectionFailuresIn15m, oldestDueAgeMs: snapshot.oldestDueAgeMs, offsiteBackupState: snapshot.offsiteBackupState, offsiteBackupAgeMs: snapshot.offsiteBackupAgeMs });
       return { enabled: true, healthy, requestSent: true, reason: reason ?? "ok", snapshot };
     } catch {
       // The heartbeat URL contains a secret path. Never include it or the
       // transport error in logs; the external service remains the source of truth.
-      this.logger.warn("healthcheck request failed", { reason: reason ?? "ok", pending: snapshot.pending, failedIn15m: snapshot.failedIn15m, oldestDueAgeMs: snapshot.oldestDueAgeMs, offsiteBackupState: snapshot.offsiteBackupState, offsiteBackupAgeMs: snapshot.offsiteBackupAgeMs });
+      this.logger.warn("healthcheck request failed", { reason: reason ?? "ok", pending: snapshot.pending, failedIn15m: snapshot.failedIn15m, inspectionFailuresIn15m: snapshot.inspectionFailuresIn15m, oldestDueAgeMs: snapshot.oldestDueAgeMs, offsiteBackupState: snapshot.offsiteBackupState, offsiteBackupAgeMs: snapshot.offsiteBackupAgeMs });
       return { enabled: true, healthy: false, requestSent: true, reason: "healthcheck_request_failed", snapshot };
     }
   }
@@ -58,7 +77,10 @@ export class HealthcheckService {
     // transition time, giving us a failure window without a schema migration.
     const failedIn15m = Number((this.db.raw.prepare("SELECT COUNT(*) AS count FROM notification_queue WHERE status='failed' AND available_at>=?").get(failedSince) as { count: number }).count);
     const offsite = this.offsiteSnapshot(now);
-    return { pending, failedIn15m, oldestDueAgeMs, ...offsite, ...this.privacySnapshot() };
+    let inspectionFailuresIn15m = 0;
+    try { inspectionFailuresIn15m = this.thresholds.inspectionFailures?.count() ?? 0; }
+    catch { inspectionFailuresIn15m = Number.MAX_SAFE_INTEGER; }
+    return { pending, failedIn15m, inspectionFailuresIn15m, oldestDueAgeMs, ...offsite, ...this.privacySnapshot() };
   }
 
   private offsiteSnapshot(now: number): Pick<HealthSnapshot, "offsiteBackupState" | "offsiteBackupAgeMs" | "offsitePrivacyGeneration"> {
@@ -95,6 +117,7 @@ export class HealthcheckService {
   }
 
   private unhealthyReason(snapshot: HealthSnapshot): string | undefined {
+    if (snapshot.inspectionFailuresIn15m >= (this.thresholds.maxInspectionFailuresIn15m ?? 1)) return "inspection_failure_threshold";
     if (snapshot.pending >= this.maxPending || snapshot.failedIn15m >= this.maxFailuresIn15m) return "queue_or_failure_threshold";
     if (snapshot.oldestDueAgeMs >= (this.thresholds.maxQueueAgeMs ?? 300_000)) return "queue_age_exceeded";
     if (snapshot.privacyDeletionState === "missing") return "privacy_state_missing";

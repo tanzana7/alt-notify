@@ -305,7 +305,7 @@ describe("final guard after Discord user fetch", () => {
     expect(state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='fetch-retry'").get()?.status).toBe("cancelled");
   });
 
-  it("requeues a surviving grouped target for fresh authorization", async () => {
+  it("sends only the surviving grouped target after destination fetch", async () => {
     const state = await setup(); await enqueue(state, "fetch-grouped", ["a", "b"]);
     const started = deferred<void>(); const release = deferred<void>();
     const sent: string[] = [];
@@ -316,11 +316,9 @@ describe("final guard after Discord user fetch", () => {
     const authorize = { authorize: async () => [{ userId: "a", label: "Name-a", kind: "direct" as const }, { userId: "b", label: "Name-b", kind: "direct" as const }] };
     const draining = state.notifications.drain(sender, 1_000, 50, authorize);
     await started.promise; state.accounts.unlink("a"); release.resolve(); await draining;
-    expect(sent).toHaveLength(0);
-    expect(state.db.raw.prepare("SELECT status, attempts FROM notification_queue WHERE message_id='fetch-grouped'").get()).toMatchObject({ status: "pending", attempts: 0 });
-    await state.notifications.drain(sender, 1_000, 50, authorize);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain("Name-b"); expect(sent[0]).not.toContain("Name-a");
+    expect(state.db.raw.prepare("SELECT status FROM notification_queue WHERE message_id='fetch-grouped'").get()?.status).toBe("sent");
   });
 });
 

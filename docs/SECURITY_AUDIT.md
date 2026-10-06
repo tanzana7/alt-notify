@@ -1,5 +1,7 @@
 # Alt Notify 公開前セキュリティ監査
 
+2026-10-06 beta.13: SQLite永続化失敗はfatalとして処理を停止し、アカウント削除はfresh disk reopenで確認する。管理対象外の旧Oracle DB copyとstagingは固定allowlist・schema fingerprint・current-generation backup確認を経てcleanupする。宛先ユーザー取得をfresh Discord認可より前へ移し、送信開始前のawait窓を閉じる。予期しないMessageCreate通知判定失敗は15分窓でHealthchecksへ反映する。DPAPI/Oracle同時喪失の復旧経路は未整備でv1.0判断項目。
+
 監査日: 2026-09-22  
 対象: TypeScript/discord.js Bot、sql.js SQLite、Oracle Cloud VM、systemd
 

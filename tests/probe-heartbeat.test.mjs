@@ -81,6 +81,13 @@ async function runHttpsCli(url, cert, dir) {
 }
 
 describe('heartbeat probe', () => {
+  it('retries a transport failure over IPv4 without exposing the URL', async () => {
+    const url = await localServer(204);
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', async () => { throw new TypeError('address timeout'); });
+    try { expect(await probeHeartbeat(url, { allowHttp: true })).toBe(true); }
+    finally { vi.stubGlobal('fetch', originalFetch); }
+  });
   it('accepts HTTP 2xx from an in-process loopback server', async () => {
     expect(await probeHeartbeat(await localServer(204), { allowHttp: true })).toBe(true);
   });

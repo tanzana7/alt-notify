@@ -27,6 +27,10 @@ BotはNode.js＋systemdで動作させる。1GB VMではDocker常駐のオーバ
 
 ## 状態確認
 
+予期しない`MessageCreate`通知判定例外は、ユーザー・メッセージIDを含まない直近15分の時刻だけをDB横の状態ファイルへ記録する。1件以上でHealthchecksへ`/fail`、15分経過後は自動復帰する。ファイルが壊れた場合もhealthyとはしない。DBのpersist/export/fsync/renameが失敗した場合はメモリとディスクの一致を仮定せずGatewayを切断して非0終了し、systemd再起動後にディスクDBを再検証する。削除処理はfresh disk openで本人データ消去を検証した後、削除後の安全なbackupを作り、固定されたOracle旧コピー・stagingを削除してから完了する。不確実なpending privacy stateではBotは起動しない。
+
+Oracle VMではNodeの自動アドレス選択でHealthchecksへの接続がタイムアウトした実績がある。heartbeat/probeは通常のHTTPS接続が通信失敗した場合だけIPv4で再試行し、証明書検証を維持しリダイレクトは追わない。応答が2xx以外なら再送せず失敗とする。秘密URLと通信例外全文はログに残さない。
+
 ```bash
 sudo systemctl status alt-notify.service --no-pager
 sudo journalctl -u alt-notify.service -n 100 --no-pager

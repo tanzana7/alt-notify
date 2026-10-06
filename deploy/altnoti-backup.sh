@@ -18,9 +18,8 @@ flock -x 9
 state_json=$(node "$state_helper" status)
 privacy_pending=$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).cleanupPending))' "$state_json")
 database_deleted=$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).databaseDeleted))' "$state_json")
-if [[ $privacy_pending == true && $database_deleted == true && $mode == normal ]]; then
-  mode=--privacy-finalize
-fi
+# A timer must not complete privacy maintenance behind the fixed artifact
+# cleanup step in altnoti-privacy finish.
 if [[ $privacy_pending == true && ( $database_deleted != true || $mode != --privacy-finalize ) ]]; then
   echo 'privacy deletion maintenance pending' >&2
   exit 1
@@ -61,7 +60,7 @@ mv -n "$temporary_path" "$backup_path"
 # and checked; it contains no user or message identifiers.
 node "$state_helper" record "${backup_path##*/}" >/dev/null
 if [[ $mode == --privacy-finalize ]]; then
-  node "$state_helper" complete >/dev/null
+  : # The caller checks unmanaged artifacts before clearing the pending epoch.
 else
   node "$state_helper" prune >/dev/null
 fi
