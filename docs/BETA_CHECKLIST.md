@@ -7,7 +7,7 @@
 
 - [x] `FREE_LINK_LIMIT=1` を確認
 - [x] Bot招待URLと必要権限を確認（本番Applicationと一致、`bot` + `applications.commands`、`View Channel`のみ）
-- [ ] `/help`、`/status`、`/watch status` の表示を確認
+- [x] `/help`、`/status`、`/watch status` の表示を確認（Discord実機: main/sub、auto/OFF/ON。noneはautomated integration test）
 - [x] Oracle backupのcurrent-generation検証と隔離restore drillを確認（[記録](RESTORE_DRILL.md)）
 - [x] 75 GuildでVerification準備、90 Guildで新規導入停止するゲートと既存Guild保持を確認
 - [x] Privacy/Termsに`/account delete`、`/unlink`、`/account refresh`、backup削除・暗号化方針を明記し、Cloudflare Pagesへ同期（Privacy専用メール窓口は設置しない）
@@ -32,14 +32,14 @@
 
 ## β確認シナリオ
 
-- [ ] 本垢への直接メンションが追加転送されない
-- [ ] サブ垢への直接メンションが本垢へ届く
-- [ ] 複数サブ垢の対象が1通に集約される
-- [ ] `/watch off` 後はそのサーバーだけ止まる
-- [ ] `/watch on` で再開する
-- [ ] 再起動後も明示的OFFが維持される
-- [ ] サブ垢が未参加のサーバーから通知されない
-- [ ] DM拒否が失敗記録になり、無限再試行しない
-- [ ] Freeは1件目が成功し、2件目が拒否される
-- [ ] 開発者・テスト用権限は1〜5件目が成功し、6件目が拒否される
-- [ ] 上限超過の既存連携が削除されない
+- [x] 本垢への直接メンションが追加転送されない（Discord実機）
+- [x] サブ垢への直接メンションが本垢へ届く（Discord実機、送信件数でも確認）
+- [x] 複数サブ垢の対象が1通に集約される（automated integration test。複数実アカウントでの試験は未実施）
+- [x] `/watch off` 後はそのサーバーだけ止まる（Discord実機で当該Guildの停止、別Guildへの影響はGuild別keyのコード確認。別Guild実機は未実施）
+- [x] `/watch on` で再開する（Discord実機、DBのON行と送信件数でも確認）
+- [x] 再起動後も明示的OFFが維持される（Discord実機＋DB、systemd再起動1回）
+- [x] サブ垢が未参加のサーバーから通知されない（automated integration test。別Guildでの実機試験は未実施）
+- [x] DM拒否が失敗記録になり、無限再試行しない（automated integration test。実DM拒否試験は未実施）
+- [x] Freeは1件目が成功し、2件目が拒否される（automated integration test。追加実アカウント試験は未実施）
+- [x] 開発者・テスト用権限は1〜5件目が成功し、6件目が拒否される（automated integration test。追加実アカウント試験は未実施）
+- [x] 上限超過の既存連携が削除されない（automated integration test。既存本番連携は変更していない）
