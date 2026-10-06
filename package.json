@@ -1,6 +1,6 @@
 {
   "name": "discord-alt-notify-mvp",
-  "version": "0.1.0-beta.12",
+  "version": "0.1.0-beta.13",
   "private": true,
   "description": "Discord公式Bot APIだけで複数アカウントのメンションを集約するMVP",
   "type": "module",
@@ -9,7 +9,7 @@
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/src/index.js",
-    "test": "vitest run && node tests/run-recovery.mjs",
+    "test": "vitest run --maxWorkers=2 --testTimeout=15000 --hookTimeout=45000 && node tests/run-recovery.mjs",
     "check": "tsc --noEmit -p tsconfig.json",
     "deploy:commands": "tsx src/deploy-commands.ts"
   },

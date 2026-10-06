@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0-beta.13 - 2026-10-06
+
+公開拡大前のデータ削除、通知認可、監視を強化。Public Betaを継続。
+
+- `/account delete`の結果を別のSQLite接続でdiskから検証し、永続化失敗時はDBをfail-stopにして削除完了と誤認しない
+- Oracle上の旧名・転送用を含むAlt Notify DBコピーを固定allowlist、schema、現行世代backupで確認してから削除対象に加える
+- DM宛先取得をfresh Discord認可より前に移し、認可後から送信開始までの非同期窓をなくす
+- 予期しないMessageCreate判定失敗を15分窓でHealthchecksの失敗判定に反映する
+- Windows DPAPIとOracleを同時に失った場合のバックアップ復旧制約を運用文書に明記する
+- privacy helperの限定sudoとsystemdの起動設定を整合させる
+- Windows CIのTLS証明書生成や復旧試験が並列負荷で時間切れにならないよう、テストworker数と有限のtimeoutを調整する
+
 ## 0.1.0-beta.12 - 2026-10-06
 
 公開拡大前のデータ保護とバックアップ復旧経路を強化。
