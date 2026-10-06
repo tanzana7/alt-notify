@@ -6,7 +6,7 @@
 
 | 項目 | 結果 | 根拠 |
 | --- | --- | --- |
-| beta.13整合 | PASS | master、tagの指すcommit、Prerelease targetとCIが一致 |
+| beta.13整合 | PASS | beta.13 tagの指すcommit、Prerelease targetとrelease commitのCIが一致。masterは受入検証の追補commitで、tagは移動していない |
 | 公開招待 | PASS | 本番Applicationと一致、`bot` + `applications.commands`、`View Channel`のみ。Administratorとprivileged intent不要 |
 | Slash Command | PASS | Discord global登録8件とコード定義の名称・説明・サブコマンドが一致 |
 | `/help`・`/status`・`/watch status` のコード | PASS | 表示分岐を確認し、既存の状態別回帰テストを実行。Discord UI表示は下表で別途確認 |
