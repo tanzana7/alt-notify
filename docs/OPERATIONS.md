@@ -31,6 +31,8 @@ BotはNode.js＋systemdで動作させる。1GB VMではDocker常駐のオーバ
 
 Oracle VMではNodeの自動アドレス選択でHealthchecksへの接続がタイムアウトした実績がある。heartbeat/probeは通常のHTTPS接続が通信失敗した場合だけIPv4で再試行し、証明書検証を維持しリダイレクトは追わない。応答が2xx以外なら再送せず失敗とする。秘密URLと通信例外全文はログに残さない。
 
+`/account delete`のroot管理backup/state helperは固定された4コマンドだけをsudoersで許可する。Botのsystemd unitで`NoNewPrivileges=yes`にするとsudo自体が実行できず、削除・起動時privacy status確認が失敗するため、`deploy/alt-notify-privacy-sudo.conf`でこの項目のみ無効化する。Botは引き続き`altnoti`ユーザーで動かし、`ProtectSystem=strict`などの隔離とsudoersの引数制限を維持する。sudo許可コマンドや任意パス入力を広げない。
+
 ```bash
 sudo systemctl status alt-notify.service --no-pager
 sudo journalctl -u alt-notify.service -n 100 --no-pager

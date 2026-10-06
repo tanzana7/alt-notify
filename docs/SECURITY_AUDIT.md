@@ -2,6 +2,8 @@
 
 2026-10-06 beta.13: SQLite永続化失敗はfatalとして処理を停止し、アカウント削除はfresh disk reopenで確認する。管理対象外の旧Oracle DB copyとstagingは固定allowlist・schema fingerprint・current-generation backup確認を経てcleanupする。宛先ユーザー取得をfresh Discord認可より前へ移し、送信開始前のawait窓を閉じる。予期しないMessageCreate通知判定失敗は15分窓でHealthchecksへ反映する。DPAPI/Oracle同時喪失の復旧経路は未整備でv1.0判断項目。
 
+本番切替時に、既存unitの`NoNewPrivileges=yes`がroot管理privacy helperの限定sudo実行を妨げ、Botが起動停止した。DB・秘密設定は変更せず、固定4コマンドだけを認めるsudoersと既存のファイルシステム隔離を維持したまま、専用drop-inで当該制限を解除した。起動後はGateway ready、Healthchecks送信エラー0、DB整合性と既存件数不変を確認した。`NoNewPrivileges`を再度有効にするにはroot補助サービス等への経路移行が必要であり、防御の深さとして今後検討する。
+
 監査日: 2026-09-22  
 対象: TypeScript/discord.js Bot、sql.js SQLite、Oracle Cloud VM、systemd
 
