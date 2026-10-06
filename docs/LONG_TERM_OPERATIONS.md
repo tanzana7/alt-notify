@@ -50,7 +50,7 @@
 ## 現行監視・保持の運用境界
 
 - beta.13: 予期しないMessageCreate通知判定失敗は直近15分に1件でHealthchecksを異常にし、時刻のみの状態を再起動後も保持する。保存失敗はDBをpoisonedにしてfail-stopする。`/account delete`はディスク上の削除と現行世代backupを確認した後、固定allowlist内の旧Oracle DB artifactを削除する。privacy pendingの自動完了はdisk削除確定済みの状態だけに限定する。
-- DPAPI CurrentUser鍵はWindows profileに依存する。profile単独喪失ならOracle現行世代backupを復旧元にできるが、Oracleとprofileを同時喪失すると暗号化済みWindows copyは復号不能。Oracleに復号鍵を置く方式はoffsite分離を損なうため採用せず、独立した復旧経路をv1.0 gateとして残す。
+- DPAPI CurrentUser鍵はWindows profileに依存する。profile単独喪失ならOracle現行世代backup、Oracle単独喪失ならWindows暗号化backupと同profileから復旧する。両方同時喪失では保存データを復旧できない可能性を現規模の既知リスクとして受容する。第三の復旧鍵は保管・漏洩・rotationリスクが増えるため作らず、サービス再構築と利用者の再登録・再連携を災害復旧の最終手段とする。データ無欠損SLAは提供しない。
 
 - Healthchecksは全Shard Gateway Ready、pending/processing数、failed数（15分）、最古due queue age（5分）を見てheartbeatまたはfailを送る。Windows VM外backupは状態ファイルの明示失敗または最終成功36時間超をfailとする。
 - Oracle backupは最新7世代かつ14日以内、Windows VM外backupはAES-GCM暗号化後の最新14世代かつ30日以内。日次処理で期限超過分を削除し、Windows PC停止中は物理削除が次回実行まで遅れる。削除前backupはprivacy generation不一致で通常restore候補から除外する。

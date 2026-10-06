@@ -87,6 +87,6 @@ git diff --check
 
 ### Discord権限
 
-招待時のScopeは `bot` と `applications.commands`、権限は監視対象チャンネルの `View Channel`、`Read Message History`、および必要なアプリケーションコマンド利用に限定します。Administrator権限は要求しません。GatewayではMessage Content Intentを使用しません。
+招待時のScopeは `bot` と `applications.commands`、Bot権限は監視対象チャンネルの `View Channel` のみを要求します。過去メッセージの取得は行わないため `Read Message History` は不要です。Administrator権限は要求しません。GatewayではMessage Content Intentを使用しません。
 
 本番運用、バックアップ、障害対応は [docs/OPERATIONS.md](docs/OPERATIONS.md) と [docs/INCIDENT_RESPONSE.md](docs/INCIDENT_RESPONSE.md) を参照してください。

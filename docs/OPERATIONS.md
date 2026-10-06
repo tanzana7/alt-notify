@@ -66,6 +66,8 @@ sudo -u altnoti /usr/bin/node --input-type=module -e 'import initSqlJs from "sql
 
 VM外バックアップにはWindows側の`deploy/pull-offsite-backup.ps1`を使う。ラッパーはNodeプロセスを起動し、SSH stdoutのbinary streamをWindows上のAES-256-GCM暗号化へ直結する。SQLite平文のWindows temp/final fileは作らない。フォーマットのbyte layoutと鍵/移行条件は[BACKUP_FORMAT.md](BACKUP_FORMAT.md)を参照。hash/restoreが成功した後にencrypted finalをatomic renameし、既存の平文`.sqlite`世代を削除、その後に古いgeneration・期限超過・14世代超の暗号化コピーをpruneし、最後にOracleへ成功を記録する。最新のcurrent-generation safe backupを残せない場合はprune/成功記録を失敗させる。既定保存先は`%LOCALAPPDATA%\AltNotify\offsite-backups`でOneDriveやGitの外。DPAPI鍵を失うと暗号化世代は復号できず、鍵とbackupを同じ場所へコピーしない。Windows PCがofflineの間は旧コピーの物理削除は次回正常実行まで遅れるが、privacy epoch不一致のものはrestore候補にしない。
 
+Windows暗号化backupの鍵はCurrentUser DPAPIとそのWindows profileに依存する。Windows profileだけを失った場合はOracleの現行世代backup、Oracleだけを失った場合はWindows profileと暗号化backupから復旧する。両方を同時に失うと現在の保存データは復旧できない可能性があるが、サービス再構築と利用者の再登録・再連携は可能。現規模ではこの二重喪失を災害時データ損失リスクとして受容し、第三の鍵や保管先は作らない。データ無欠損SLAは提供しない。復旧時には必ずprivacy generationとrestore verifierを確認する。
+
 ## 復旧目標とrestore drill
 
 - RPO運用目標：Oracle日次backupが成功している場合は最大24時間。Windows VM外backupは毎日06:00 JSTを目標とし、36時間更新されない場合はHealthchecks異常として扱う。
