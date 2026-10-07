@@ -78,7 +78,7 @@ export class AccountService {
       this.validateCode(row, subUserId, now);
       const count = (this.db.raw.prepare("SELECT COUNT(*) AS count FROM account_links WHERE main_user_id=?").get(row.mainUserId) as { count: number }).count;
       const entitlement = this.db.raw.prepare("SELECT plan FROM entitlements WHERE user_id=?").get(row.mainUserId) as { plan: Plan } | undefined;
-      // Proと開発者テスト枠は従来どおり5。テスト期間中に変更するのはFreeだけ。
+      // Freeの新規連携だけを設定上限で制限し、既存の連携と内部枠は維持する。
       const limit = entitlement?.plan === "developer_test" || entitlement?.plan === "pro" ? 5 : this.freeLinkLimit;
       if (count >= limit) throw new UserFacingError("連携可能なサブアカウント数の上限に達しています");
       this.db.raw.prepare("INSERT INTO account_links(sub_user_id, main_user_id, username, created_at) VALUES (?, ?, ?, ?)").run(subUserId, row.mainUserId, username, now);

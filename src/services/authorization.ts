@@ -14,8 +14,8 @@ export async function authorizeQueuedNotification(
   // briefly and only fail after the queue's finite authorization budget.
   if (!guild) return { kind: "retry", reason: "temporary discord api failure" };
 
-  // Delivery must not trust cached channel overwrites or member roles. A
-  // private thread also needs thread membership, which this beta does not
+  // Delivery must not trust cached channel overwrites or member roles.
+  // Private threads also need thread membership, which this design does not
   // collect; exclude it rather than inferring access from its parent channel.
   let channel;
   try { channel = await guild.channels.fetch(input.channelId, { force: true }); }

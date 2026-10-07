@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.0 - 2026-10-07
+
+Public Betaを終了し、Alt Notifyを正式版として公開。
+
+- 本人承認済みの複数Discordアカウントへの直接・ロール・`@everyone` / `@here`メンションをメインアカウントDMへ集約。同一投稿は1通にまとめ、直接メンションを優先
+- Bot導入済みサーバーの自動監視とサーバー単位の`/watch off` / `on`
+- 送信直前のDiscord所属・閲覧権限のfresh確認と一時障害の再試行
+- `/account refresh`、`/unlink`、`/account delete`による表示情報更新・連携解除・本人データ削除
+- メッセージ本文・添付ファイルは保存・転送しない
+- Oracleの整合性確認済みバックアップ、暗号化Windows VM外バックアップと隔離復元検証
+- HealthchecksとUbuntu / Windows CIによる監視・検証、Discord実機v1受入試験を完了
+
 ## 0.1.0-beta.13 - 2026-10-06
 
 公開拡大前のデータ削除、通知認可、監視を強化。Public Betaを継続。

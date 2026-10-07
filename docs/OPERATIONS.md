@@ -94,7 +94,7 @@ DBが欠落・空・破損した場合は、まずサービスを停止して原
 5. Oracleで`npm ci --omit=dev`、systemd reload、`systemctl restart alt-notify.service`。
 6. `status`、現在Invocationの最新Gateway状態、DB整合性、既存連携、pendingキューを確認。
 
-環境変数の変更時は `/etc/altnoti.env`を直接ログ出力せず、必要なキー名だけをレビューする。公開βの通常Free上限は`FREE_LINK_LIMIT=1`です。開発者・テスト用権限とPro枠はアプリ側で5件を維持します。既存の超過連携は削除せず、新規連携だけを拒否します。
+環境変数の変更時は `/etc/altnoti.env`を直接ログ出力せず、必要なキー名だけをレビューする。通常Free上限は`FREE_LINK_LIMIT=1`です。開発者・テスト用権限と未提供のPro枠はアプリ側で5件を維持します。既存の超過連携は削除せず、新規連携だけを拒否します。
 
 ## Token更新
 

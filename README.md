@@ -2,7 +2,7 @@
 
 別垢の通知も、いつもの垢へ。
 
-Alt Notifyは、複数のDiscordアカウントを使う人向けの公開β版通知集約Botです。連携したサブアカウントへのメンションを、普段使うメインアカウントへDMで知らせます。
+Alt Notifyは、複数のDiscordアカウントを使う人向けの通知集約Botです。連携したサブアカウントへのメンションを、普段使うメインアカウントへDMで知らせます。
 
 ## 対応通知
 
@@ -23,9 +23,9 @@ Alt Notifyは、複数のDiscordアカウントを使う人向けの公開β版�
 
 本文解析やMessage Content Intentは使用せず、Discordのメンション情報を利用します。ロールメンションはDiscord本体のミュート・通知抑制設定とは独立して判定します。
 
-## Free Beta
+## Free
 
-公開βでは、通常のFreeユーザーはサブアカウント1個まで無料で連携できます。メインアカウント自身は上限に含みません。開発者・テスト枠は5個までです。Proの課金機能は未提供です。
+Freeではサブアカウント1個まで無料で連携できます。メインアカウント自身は上限に含みません。現在、課金機能は提供していません。
 
 ## 基本的な使い方
 
@@ -45,12 +45,12 @@ Alt Notifyは、複数のDiscordアカウントを使う人向けの公開β版�
 
 - [Privacy Policy](docs/PRIVACY.md)
 - [Terms of Service](docs/TERMS.md)
-- [公開βLP](https://alt-notify.pages.dev/)
+- [公式サイト](https://alt-notify.pages.dev/)
 - [公開Terms](https://alt-notify.pages.dev/terms.html) / [公開Privacy](https://alt-notify.pages.dev/privacy.html)
 
-## β版について
+## ご利用上の注意
 
-公開βのため、Discord障害、権限変更、DM拒否、ネットワーク障害、VM障害などにより通知の到達・即時性・完全性を保証できない場合があります。Alt NotifyはDiscordとは独立したサービスです。
+Discord障害、権限変更、DM拒否、ネットワーク障害、VM障害などにより通知の到達・即時性・完全性を保証できない場合があります。Alt NotifyはDiscordとは独立したサービスです。
 
 ## 開発者向け
 
