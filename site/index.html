@@ -6,6 +6,8 @@
   <meta name="description" content="Alt Notifyは、Discordの別アカウントへのメンションを普段使うアカウントへまとめて知らせる通知Botです。">
   <title>Alt Notify — 別垢の通知も、いつもの垢へ。</title>
   <link rel="stylesheet" href="/styles.css">
+  <script defer src="/analytics-config.js"></script>
+  <script defer src="/analytics.js"></script>
 </head>
 <body>
   <header class="wrap nav">
@@ -22,7 +24,7 @@
       <h1>別垢の通知も、<br>いつもの垢へ。</h1>
       <p class="lead">複数のDiscordアカウントを使っている人向けの通知集約Bot。サブアカウントへのメンションを、普段使っているメインアカウントへDMで知らせます。</p>
       <div class="actions">
-        <a class="button" href="https://discord.com/oauth2/authorize?client_id=1551215506722132120&amp;scope=bot%20applications.commands&amp;permissions=1024">Botを追加する</a>
+        <a class="button" href="https://discord.com/oauth2/authorize?client_id=1551215506722132120&amp;scope=bot%20applications.commands&amp;permissions=1024" data-analytics-event="bot_invite_click" data-analytics-location="hero">Botを追加する</a>
         <a class="button secondary" href="#how">使い方を見る</a>
       </div>
     </section>
@@ -73,9 +75,9 @@
     </section>
   </main>
   <footer class="wrap">
-    <a href="/privacy.html">Privacy Policy</a>
-    <a href="/terms.html">Terms of Service</a>
-    <a href="https://github.com/tanzana7/alt-notify">GitHub</a>
+    <a href="/privacy.html" data-analytics-event="privacy_click" data-analytics-location="footer">Privacy Policy</a>
+    <a href="/terms.html" data-analytics-event="terms_click" data-analytics-location="footer">Terms of Service</a>
+    <a href="https://github.com/tanzana7/alt-notify" data-analytics-event="github_click" data-analytics-location="footer">GitHub</a>
     <a href="https://github.com/tanzana7/alt-notify/issues">お問い合わせ</a>
     <p>通知の到達・即時性・完全性を保証するものではありません。</p>
   </footer>
