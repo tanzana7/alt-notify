@@ -63,8 +63,9 @@ describe("GA4 foundation", () => {
     result.window.AltNotifyAnalytics.trackEvent("bot_invite_click", { location: "attacker", guildId: "guild" });
     result.window.AltNotifyAnalytics.trackEvent("unknown_event", { location: "hero" });
     assert.equal(calls.length, 4);
-    assert.deepEqual(Array.from(calls[2]), ["event", "bot_invite_click", { location: "hero" }]);
-    assert.deepEqual(Array.from(calls[3]), ["event", "bot_invite_click", {}]);
+    // The loader runs in a VM realm, so normalize its arguments before comparing prototypes.
+    assert.deepEqual(JSON.parse(JSON.stringify(Array.from(calls[2]))), ["event", "bot_invite_click", { location: "hero" }]);
+    assert.deepEqual(JSON.parse(JSON.stringify(Array.from(calls[3]))), ["event", "bot_invite_click", {}]);
     assert.equal(calls.some((call) => JSON.stringify(call).includes("discord-user")), false);
     assert.equal(calls.some((call) => JSON.stringify(call).includes("guild")), false);
   });
