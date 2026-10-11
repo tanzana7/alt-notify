@@ -1,6 +1,6 @@
 # Alt Notify プライバシー情報
 
-最終更新：2026-10-07
+最終更新：2026-10-11
 
 ## DBへ保存する情報
 
@@ -20,6 +20,10 @@ Guild名とChannel名は通知表示のためDiscordのキャッシュから参�
 ## 利用目的
 
 本人承認済みの連携を管理し、対象イベントの通知、重複排除、送信再試行、障害調査、バックアップと復元確認に利用します。運営統計は件数と状態のみを扱い、メッセージ本文は含みません。
+
+## 公開サイトのアクセス解析
+
+公開LPではGoogle Analytics 4を利用し、ページ閲覧と主要リンク（Bot招待、GitHub、Privacy、Terms）の利用状況を統計的に把握します。目的は利用状況の把握とサービス改善です。GoogleのタグがCookie等の識別子や接続情報を処理する場合があります。当サイトの計測イベントにはDiscord User ID、Guild ID、Channel ID、Message ID、username、連携コード、メッセージ本文、DM本文、添付情報、Bot招待URL全体、URL queryの値を含めません。Googleによる情報の取り扱いは[Googleのプライバシーポリシー](https://policies.google.com/privacy)等に従います。Botの通知処理にGA4は使用しません。
 
 ## 保存場所と委託先
 

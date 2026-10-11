@@ -10,16 +10,17 @@ const analyticsSource = fs.readFileSync(path.join(root, "site", "analytics.js"),
 const indexSource = fs.readFileSync(path.join(root, "site", "index.html"), "utf8");
 const configSource = fs.readFileSync(path.join(root, "site", "analytics-config.js"), "utf8");
 
-function loadAnalytics({ measurementId = "", hostname = "alt-notify.pages.dev", protocol = "https:" } = {}) {
+function loadAnalytics({ measurementId = "", hostname = "alt-notify.pages.dev", protocol = "https:", search = "", referrer = "" } = {}) {
   const appendedScripts = [];
   const listeners = {};
   const document = {
+    referrer,
     head: { appendChild(script) { appendedScripts.push(script); if (script.onload) script.onload(); } },
     createElement() { return {}; },
     addEventListener(name, listener) { listeners[name] = listener; }
   };
   const window = {
-    location: { hostname, protocol },
+    location: { hostname, protocol, search },
     ALT_NOTIFY_ANALYTICS: { measurementId }
   };
   const context = { window, document, encodeURIComponent };
@@ -56,6 +57,30 @@ describe("GA4 foundation", () => {
     assert.equal(typeof result.window.gtag, "function");
   });
 
+  it("uses the configured ID without sending URL queries, referrers, or ad signals", () => {
+    const configuredWindow = {};
+    vm.runInNewContext(configSource, { window: configuredWindow });
+    const measurementId = configuredWindow.ALT_NOTIFY_ANALYTICS.measurementId;
+    assert.match(measurementId, /^G-[A-Z0-9]{6,20}$/);
+    assert.notEqual(measurementId, "G-XXXXXXXXXX");
+
+    const result = loadAnalytics({
+      measurementId,
+      search: "?token=private-query-value",
+      referrer: "https://example.com/?token=private-referrer-value"
+    });
+    assert.equal(result.appendedScripts[0].src, `https://www.googletagmanager.com/gtag/js?id=${measurementId}`);
+    const configCall = JSON.parse(JSON.stringify(Array.from(result.window.dataLayer[1])));
+    assert.deepEqual(configCall, ["config", measurementId, {
+      page_location: "https://alt-notify.pages.dev/",
+      page_referrer: "",
+      send_page_view: true,
+      allow_google_signals: false,
+      allow_ad_personalization_signals: false
+    }]);
+    assert.doesNotMatch(JSON.stringify(result.window.dataLayer), /private-query-value|private-referrer-value/);
+  });
+
   it("tracks only allowlisted events with a safe location parameter", () => {
     const result = loadAnalytics({ measurementId: "G-ABC1234567" });
     const calls = result.window.dataLayer;
@@ -76,7 +101,6 @@ describe("GA4 foundation", () => {
     for (const marker of ["bot_invite_click", "github_click", "privacy_click", "terms_click"]) assert.match(indexSource, new RegExp(`data-analytics-event="${marker}"`));
     assert.match(indexSource, /<script defer src="\/analytics-config\.js"><\/script>\s*<script defer src="\/analytics\.js"><\/script>/);
     assert.doesNotMatch(indexSource, /googletagmanager\.com/);
-    assert.equal(configSource.match(/measurementId:\s*""/)?.[0], "measurementId: \"\"");
   });
 
   it("does not contain Discord identity fields or message contents in the analytics implementation", () => {

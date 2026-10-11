@@ -1,21 +1,15 @@
 # アクセス解析の実装メモ
 
-現在、GA4は無効です。`site/analytics-config.js` の `measurementId` が空文字のため、公開LPからGoogleへの通信は発生しません。
+公開LP `https://alt-notify.pages.dev/` でGoogle Analytics 4を利用します。Measurement IDは`site/analytics-config.js`だけで管理します。空文字に戻すとGA4のscriptとイベント送信を停止できます。
 
-将来GA4を有効化する場合は、次の順で行います。
+計測対象は次のとおりです。
 
-1. `site/analytics-config.js` の空文字を、発行済みのGA4 Measurement IDへ変更する
-2. Privacy PolicyへGA4の利用目的・取得項目・外部送信先・無効化方法を追記する
-3. 内容確認後にPagesへデプロイする
-
-有効化後に送信する予定のイベントは次のとおりです。
-
-- `page_view`（gtagの標準設定による1回のみのページビュー）
+- `page_view`（ページ閲覧）
 - `bot_invite_click`
 - `github_click`
 - `privacy_click`
 - `terms_click`
 
-イベントパラメータは固定の`location`だけを使用します。Discord User ID、Guild ID、Channel ID、Message ID、username、アカウント情報、OAuth URL全体、URL queryの秘密値、本文は送信しません。
+`site/analytics.js`はHTTPSのproduction hostでのみGoogleタグを読み込みます。localhostやpreviewでは読み込みません。イベントの独自パラメータは固定の`location`だけです。Discord User ID、Guild ID、Channel ID、Message ID、username、連携コード、メッセージ本文、DM本文、添付情報、OAuth URL全体は渡しません。ページURLはLPの固定URL、referrerは空に指定し、query値をGoogleタグへ渡さない設計です。広告用途のGoogle signalsと広告パーソナライズも無効にします。
 
-GA4有効化時は、CSPやセキュリティヘッダーを追加する場合に`www.googletagmanager.com`とGoogle Analyticsの送信先を許可対象として検討します。無効状態の現在はCSPを緩和しません。
+Google Analyticsのデータストリームで、拡張計測の「外部リンクのクリック」と「サイト内検索」を無効にしておきます。これらは独自イベントとは別にリンク先URLや検索queryを自動送信し得るため、公開前の必須確認です。将来CSPを追加する場合は、GoogleタグとAnalytics送信先を許可対象に含めるかを確認します。

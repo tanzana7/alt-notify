@@ -46,7 +46,15 @@
   window.dataLayer = window.dataLayer || [];
   window.gtag = function () { window.dataLayer.push(arguments); };
   window.gtag("js", new Date());
-  window.gtag("config", measurementId.trim());
+  // GA4 defaults to the current URL and referrer, which can contain query values.
+  // This script only runs on the LP, so a fixed page URL avoids forwarding them.
+  window.gtag("config", measurementId.trim(), {
+    page_location: "https://alt-notify.pages.dev/",
+    page_referrer: "",
+    send_page_view: true,
+    allow_google_signals: false,
+    allow_ad_personalization_signals: false
+  });
 
   var script = document.createElement("script");
   script.async = true;
