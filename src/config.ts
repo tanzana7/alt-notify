@@ -6,6 +6,9 @@ const envSchema = z.object({
   DISCORD_CLIENT_ID: z.string().min(1),
   DISCORD_DEV_GUILD_ID: z.string().optional(),
   OWNER_DISCORD_ID: z.string().optional(),
+  ADMIN_STATS_DISCORD_IDS: z.string().optional().default("")
+    .transform((value) => [...new Set(value.split(",").map((id) => id.trim()).filter(Boolean))])
+    .refine((ids) => ids.every((id) => /^[0-9]{17,20}$/.test(id)), "Discord User IDのみ指定できます"),
   DATABASE_PATH: z.string().default("./data/discord-alt-notify.sqlite"),
   FREE_LINK_LIMIT: z.coerce.number().int().min(1).max(100).default(1),
   MAX_PENDING_PER_MAIN: z.coerce.number().int().min(1).max(10_000).default(200),

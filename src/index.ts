@@ -204,7 +204,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
       return;
     }
     if (interaction.commandName === "admin-stats") {
-      if (!canUseAdminStats(interaction.user.id, config.OWNER_DISCORD_ID)) { await privateReply(interaction, "権限がありません"); return; }
+      if (!canUseAdminStats(interaction.user.id, config.OWNER_DISCORD_ID, config.ADMIN_STATS_DISCORD_IDS)) { await privateReply(interaction, "権限がありません"); return; }
       const stats = getStats(db, isGatewayReady(client), client.guilds.cache.size, Date.now(), config.GUILD_VERIFICATION_PREP_THRESHOLD, config.GUILD_HARD_LIMIT);
       await privateReply(interaction, `導入サーバー数：${stats.guilds}\nVerification準備開始：${stats.prepThreshold}\n新規導入停止：${stats.hardLimit}\nゲート状態：${stats.verificationState}\nメイン登録数：${stats.mainAccounts}\n連携済みアカウント数：${stats.linkedAccounts}\n本日の通知送信数：${stats.notificationsSentToday}\n送信失敗数：${stats.notificationFailures}\n送信待ち：${stats.pendingQueue}\nGateway：${stats.gatewayReady ? "接続" : "未接続"}`);
     }
