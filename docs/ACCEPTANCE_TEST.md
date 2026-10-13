@@ -4,6 +4,8 @@
 
 ## 自動確認
 
+注記：以下のbeta.13受入記録にあるWindows encrypted backupは移行前の履歴である。2026-10-13の現行構成では、Oracle→非公開Cloudflare R2の暗号化backup、remote/restore verify、privacy generation一致、systemd timer、Healthchecks successを確認済みで、旧Windows Task Schedulerはdisableしている。
+
 | 項目 | 結果 | 根拠 |
 | --- | --- | --- |
 | beta.13整合 | PASS | beta.13 tagの指すcommit、Prerelease targetとrelease commitのCIが一致。masterは受入検証の追補commitで、tagは移動していない |
@@ -11,7 +13,7 @@
 | Slash Command | PASS | Discord global登録8件とコード定義の名称・説明・サブコマンドが一致 |
 | `/help`・`/status`・`/watch status` のコード | PASS | 表示分岐を確認し、既存の状態別回帰テストを実行。Discord UI表示は下表で別途確認 |
 | `/account delete`相当の隔離E2E | PASS | synthetic DBでdisk再確認、privacy世代更新、旧backup復元拒否、新backup隔離復元、無関係データ保持、旧artifact整理を確認。本番アカウントは削除していない |
-| Oracle/Windows/Healthchecks | PASS | Gateway全shard ready、DB integrity ok、現行Oracle backupとWindows暗号化backupの隔離復元成功、平文0、Windows Bot停止、監視失敗ログ0。外部checkのUp・通知先は運営者が確認済み |
+| Oracle/R2/Healthchecks | PASS | Gateway全shard ready、DB integrity ok、現行Oracle backupとR2暗号化backupの隔離復元成功、旧Windows Task Scheduler disable、監視失敗ログ0。外部checkのUp・通知先は運営者が確認済み |
 
 ## 実Discord操作
 
@@ -32,4 +34,4 @@
 
 受入後の本番状態: main/link各1、pending/processing/failed各0、inspection failure 0、Gateway全shard ready、Healthchecksの内部健全条件に異常なし。watchはONに戻した。systemd再起動はA4の検証で1回のみ行い、既存連携と通知履歴は維持した。
 
-現在のv1 readiness: **GREEN / V1 READY**。A6とB群は実Discord未実施だが、追加アカウントや危険な設定変更を求めず、上記のautomated integration testを受入証拠として採用する。既知P2のロールMember REST負荷、sql.js全量保存、`/account refresh`履歴走査、systemd `NoNewPrivileges`再有効化余地は、今回新たな実害が確認されなかったためYELLOWとして維持する。DPAPI profileとOracleの同時喪失は、現規模で受容する災害時データ損失リスクであり、独立復旧鍵は作らない。v1.0 Releaseは未作成で、Public Beta表記を維持する。
+現在のv1 readiness: **GREEN / V1 READY**。A6とB群は実Discord未実施だが、追加アカウントや危険な設定変更を求めず、上記のautomated integration testを受入証拠として採用する。既知P2のロールMember REST負荷、sql.js全量保存、`/account refresh`履歴走査、systemd `NoNewPrivileges`再有効化余地は、今回新たな実害が確認されなかったためYELLOWとして維持する。Oracle VMと独立復旧用copyの同時喪失は、現規模で受容する災害時データ損失リスクである。v1.0 Releaseは未作成で、Public Beta表記を維持する。

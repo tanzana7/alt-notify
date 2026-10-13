@@ -18,6 +18,6 @@ Freeではサブアカウントを1つまで無料で連携できます。直接
 - 連携承認はサブ垢本人が承認ボタンを押してください。
 - 同じDiscordアカウントをメインとサブの両方に新規登録することはできません。既存の兼任状態は `/status` で確認でき、`/account delete` は両方を削除します。
 - サブ垢が参加していないサーバーからは通知されません。
-- `/account refresh` は保存済み表示情報を現在のDiscord情報へ更新します。`/unlink` は個別連携解除、`/account delete` は保存データの削除です。削除前backupは通常のrestore候補から除外されます。Windows VM外backupは暗号化しますが、PC停止中の物理削除は次回接続まで遅れる場合があります（[Privacy](PRIVACY.md)）。
+- `/account refresh` は保存済み表示情報を現在のDiscord情報へ更新します。`/unlink` は個別連携解除、`/account delete` は保存データの削除です。削除前backupは通常のrestore候補から除外されます。オフサイトbackupはOracle VMから非公開Cloudflare R2へ暗号化して保存し、R2からのdownload・復号・別DBrestore検証が成功した場合だけ成功扱いにします（[Privacy](PRIVACY.md)）。
 - DM拒否、権限不足、DiscordやVMの障害時は通知できないことがあります。
 - 本文や添付は保存しません。問題があれば、時刻・サーバー名・コマンド結果だけを運営者へ知らせてください。

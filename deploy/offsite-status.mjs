@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 export const OFFSITE_STATUS_DIRECTORY = "/var/lib/altnoti-monitoring";
 export const OFFSITE_STATUS_FILENAME = "offsite-backup-status.json";
-export const FAILURE_CODES = new Set(["prepare_failed", "transfer_failed", "hash_mismatch", "sqlite_invalid", "final_save_failed", "retention_cleanup_failed", "status_update_failed"]);
+export const FAILURE_CODES = new Set(["prepare_failed", "transfer_failed", "hash_mismatch", "sqlite_invalid", "final_save_failed", "retention_cleanup_failed", "status_update_failed", "remote_verification_failed", "download_failed", "privacy_mismatch"]);
 
 function statusPath(directory) { return path.join(directory, OFFSITE_STATUS_FILENAME); }
 
@@ -14,6 +14,8 @@ function validateStatus(value) {
   if (!value || typeof value !== "object" || !["ok", "failed"].includes(value.state) || !Number.isSafeInteger(value.lastAttemptAt) || value.lastAttemptAt < 0 || !(value.lastSuccessAt === null || (Number.isSafeInteger(value.lastSuccessAt) && value.lastSuccessAt >= 0)) || (value.privacyGeneration !== undefined && (!Number.isSafeInteger(value.privacyGeneration) || value.privacyGeneration < 0))) throw new Error("invalid offsite status");
   if (value.state === "ok" && (value.lastSuccessAt === null || value.failureCode !== undefined || !Number.isSafeInteger(value.privacyGeneration))) throw new Error("invalid offsite status");
   if (value.state === "failed" && !FAILURE_CODES.has(value.failureCode)) throw new Error("invalid offsite status");
+  for (const key of ["remoteVerified", "restoreVerified"]) if (value[key] !== undefined && typeof value[key] !== "boolean") throw new Error("invalid offsite status");
+  if (value.provider !== undefined && value.provider !== "cloudflare-r2") throw new Error("invalid offsite status");
   return value;
 }
 
@@ -37,16 +39,22 @@ function ensureDirectory(directory, rootGroupId) {
   }
 }
 
-export function writeOffsiteStatus(directory, state, failureCode, now = Date.now(), rootGroupId, privacyGeneration) {
+export function writeOffsiteStatus(directory, state, failureCode, now = Date.now(), rootGroupId, privacyGeneration, details = {}) {
   if (state !== "ok" && state !== "failed") throw new Error("invalid state");
   if (state === "failed" ? !FAILURE_CODES.has(failureCode) : failureCode !== undefined) throw new Error("invalid failure code");
   if (!Number.isSafeInteger(now) || now < 0) throw new Error("invalid timestamp");
   if (state === "ok" && (!Number.isSafeInteger(privacyGeneration) || privacyGeneration < 0)) throw new Error("invalid privacy generation");
+  if (!details || typeof details !== "object" || Array.isArray(details)) throw new Error("invalid status details");
+  const detailKeys = Object.keys(details);
+  if (detailKeys.some((key) => !["remoteVerified", "restoreVerified", "provider"].includes(key))) throw new Error("invalid status details");
+  if (details.remoteVerified !== undefined && typeof details.remoteVerified !== "boolean") throw new Error("invalid status details");
+  if (details.restoreVerified !== undefined && typeof details.restoreVerified !== "boolean") throw new Error("invalid status details");
+  if (details.provider !== undefined && details.provider !== "cloudflare-r2") throw new Error("invalid status details");
   ensureDirectory(directory, rootGroupId);
   const previous = readOffsiteStatus(directory);
   const next = state === "ok"
-    ? { state, lastAttemptAt: now, lastSuccessAt: now, privacyGeneration }
-    : { state, lastAttemptAt: now, lastSuccessAt: previous?.lastSuccessAt ?? null, ...(previous?.privacyGeneration !== undefined ? { privacyGeneration: previous.privacyGeneration } : {}), failureCode };
+    ? { state, lastAttemptAt: now, lastSuccessAt: now, privacyGeneration, ...details }
+    : { state, lastAttemptAt: now, lastSuccessAt: previous?.lastSuccessAt ?? null, ...(previous?.privacyGeneration !== undefined ? { privacyGeneration: previous.privacyGeneration } : {}), ...details, failureCode };
   const temporary = path.join(directory, `.offsite-status-${randomBytes(8).toString("hex")}.tmp`);
   let fd;
   try {
