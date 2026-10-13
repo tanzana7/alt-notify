@@ -94,7 +94,11 @@ export async function runOffsiteBackup({ client, backupDirectory = ORACLE_BACKUP
     await restoreDownloaded(downloaded.body, key, metadata, privacyState, restore);
     await client.putObject(finalKey, encrypted.bytes, metadataFor(metadata));
     assertHead(await client.headObject(finalKey), encrypted.bytes.length, metadata);
-    const status = writeOffsiteStatus(statusDirectory, "ok", undefined, now, applicationGroupId(), metadata.privacyGeneration, { remoteVerified: true, restoreVerified: true, provider: "cloudflare-r2" });
+    // The production status path is root-managed and must retain the altnoti group
+    // ownership check. Tests use isolated temporary directories, where requiring a
+    // host-specific system group would make the backup logic depend on CI accounts.
+    const groupId = statusDirectory === "/var/lib/altnoti-monitoring" ? applicationGroupId() : undefined;
+    const status = writeOffsiteStatus(statusDirectory, "ok", undefined, now, groupId, metadata.privacyGeneration, { remoteVerified: true, restoreVerified: true, provider: "cloudflare-r2" });
     success = true;
     const listed = [];
     let cursor;
