@@ -1,19 +1,27 @@
-# Windows offsite backup format
+# Cloudflare R2 offsite backup format
 
-Current format version is `ALTNENC1` / version 1. A backup filename is the UTC Oracle snapshot name followed by `.enc`; staging uses `.enc.partial` and is never treated as a restorable final.
+現行のオフサイトバックアップは、Oracle VM上で作成したSQLiteバックアップを暗号化し、非公開のCloudflare R2バケットへ保存する。Windows PCはruntime経路に含まれない。
 
-The binary layout is:
+## 暗号化形式
+
+形式バージョンは`ALTNENC1` / version 1。ファイル名はUTCのOracle snapshot名に`.enc`を付けたもの。アップロード中の`.uploading`は最終世代として扱わない。
+
+バイナリ構成は次のとおり。
 
 1. 8-byte magic `ALTNENC1`
 2. 4-byte big-endian header length
-3. UTF-8 JSON header, authenticated as AES-GCM additional data. It contains only format version, UTC creation time in Unix milliseconds, privacy generation, and a random 96-bit nonce.
-4. AES-256-GCM ciphertext: SQLite bytes followed by an encrypted trailer containing `ALTNEND1`, original byte length, and SHA-256 of the plaintext SQLite bytes
+3. AES-GCM additional dataとして認証するUTF-8 JSON header。形式、UTC作成時刻（Unix milliseconds）、privacy generation、ランダムな96-bit nonceだけを含む
+4. AES-256-GCM ciphertext。SQLite bytesと、`ALTNEND1`、元サイズ、平文SQLiteのSHA-256を含む暗号化trailerを含む
 5. 16-byte GCM authentication tag
 
-The encryption key is 32 random bytes. Only a DPAPI CurrentUser-protected blob is written to `%LOCALAPPDATA%\AltNotify\keys\offsite-backup-key.dpapi`; ACL checks require the current Windows user and SYSTEM only. The key file is separate from the backup directory. Losing the Windows profile/DPAPI key makes that profile's encrypted copies unreadable; Oracle copies remain an independent recovery source. No Oracle-hosted secondary decryption key is used: letting the VM decrypt offsite copies would defeat the separation. If the Windows profile is lost but Oracle survives, restore from the current-generation Oracle backup and establish a new Windows key for future offsite copies. If both profile/key and Oracle copies are lost, existing Windows ciphertext is not recoverable. The simultaneous-loss case is an accepted disaster recovery risk; no separate recovery key is configured.
+暗号鍵は32-byteのランダム値で、Oracle VMの`/etc/altnoti-offsite/backup.key`にroot-onlyで保存する。VMとは独立した復旧用コピーはWindows DPAPI保護下の`C:\Users\user\CodexRecovery\altnoti-offsite-key.dpapi`へ保管し、backupと同じ場所には置かない。R2 credentialも`/etc/altnoti-offsite/r2.env`のroot-onlyファイルにのみ置く。
 
-The pull process streams SSH binary stdout into the AES-GCM encryptor and writes only ciphertext to `.enc.partial`. It compares the streamed plaintext SHA-256 with Oracle's manifest before completing the GCM tag, then authenticates/decrypts in memory and runs SQLite integrity, production schema preflight/migration, and application-service initialization without creating a plaintext DB file. Only after that drill succeeds is the encrypted file renamed to final. Existing plaintext `.sqlite` copies are removed after the new encrypted final is verified. On any earlier failure, they remain; partial ciphertext is removed.
+## 検証と保持
 
-Before encrypted final is pruned, the process confirms at least one authenticated, integrity-checked current privacy-generation copy remains. It then retains up to 14 generations within 30 days, while keeping the newest safe copy even if older than 30 days. Old privacy generations are never accepted by the restore helper and are removed on the next successful online cleanup. An offline Windows PC cannot physically delete its local files until it next runs.
+Oracle側の処理は、整合性確認済みartifactを暗号化して一時objectへuploadし、サイズ・metadata・SHA-256を確認する。その後R2からdownload、復号、別DBへのrestore drill、SQLite integrity、schema、privacy generation一致を確認し、全て成功した場合だけ正式objectとstatus `ok`を確定する。
 
-This is a private operational format, not a general-purpose archival format. Do not edit headers, move the DPAPI key into the backup directory, or import a backup unless `deploy/verify-offsite-backup.mjs` succeeds against the current privacy state.
+正式objectは最新14世代かつ30日以内を基本に整理する。削除前世代はprivacy generationが一致しないためrestore候補にしない。最新の安全なcurrent-generation世代を1件も残せない場合、cleanupと成功記録を失敗させる。
+
+## 復旧時の注意
+
+この形式は一般用途のアーカイブではない。headerや暗号化形式を編集せず、現行の復元検証手順を通してからimportする。restoreは必ず本番DBとは別の一時DBで行い、active DBへ上書きしない。R2 bucketはprivateのままにし、object keyにDiscord ID、username、Guild名、hostname、tokenを含めない。

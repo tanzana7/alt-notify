@@ -1,6 +1,6 @@
 # 外部監視・外部バックアップの比較
 
-調査日: 2026-10-05
+調査日: 2026-10-13
 
 本番では既存のHealthchecks.io Hobbyist checkを利用中。今回、新しい外部サービス、課金、APIキー、公開endpointは追加していない。
 
@@ -34,7 +34,7 @@ UptimeRobotは公開HTTP endpointを必要とするため、Gateway Botだけの
 - バックアップ暗号化、SHA-256、保持世代、復元テスト
 - R2到達失敗時の再試行とアラート
 
-このfeature branchでは、OracleからR2へ暗号化uploadし、head/download/restore verify後にstatusを更新する実装とsystemd timerを準備している。R2 bucket、専用API credential、Oracle VMとは独立した暗号鍵escrowが揃うまで本番切替は行わず、既存Windows backupも停止しない。導入ゲートと秘密設定は[SERVER_SIDE_OFFSITE_BACKUP.md](SERVER_SIDE_OFFSITE_BACKUP.md)に記載する。
+現行feature branchでは、OracleからR2へ暗号化uploadし、head/download/restore verify後にstatusを更新する実装とsystemd timerを運用している。R2 bucket `altnotify`、bucket限定credential、Oracle VMとは独立した暗号鍵escrowを設定済みで、手動実行・systemd実行・Healthchecks successを確認した。既存Windows backupは削除せず、runtime依存だけを外してTask Schedulerをdisableした。導入条件と秘密設定は[SERVER_SIDE_OFFSITE_BACKUP.md](SERVER_SIDE_OFFSITE_BACKUP.md)に記載する。
 
 ### Cloudflare Workers経由
 

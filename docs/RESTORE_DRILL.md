@@ -1,16 +1,21 @@
 # 隔離restore drill記録
 
-beta.13では本番データを書き戻さず、current-generation Oracle backupの整合性・schema・metadataと隔離restore verifierを再確認する。WindowsのCurrentUser DPAPI profile単独喪失時はOracle現行世代backup、Oracle単独喪失時はWindows暗号化backupと同profileから復旧する。双方同時喪失時に保存データを復旧できない可能性は、現規模の既知の災害時リスクとして受容した。独立した復旧鍵は作らず、サービス再構築・再登録・再連携は可能とする。データ無欠損SLAは提供しない。
+本番DBへ書き戻さず、Oracle backupまたはCloudflare R2のcurrent-generation backupを別DBへ復元して、SQLite integrity、schema、metadata、privacy generation、アプリケーション初期化を検証する。Gateway接続・DM送信は行わない。削除前generationのbackupはrestore候補として扱わない。
 
-2026-10-05 06:23 UTC（15:23 JST）に実施した履歴。Oracleおよび当時のWindowsコピーを本番DBへ書き戻さず、一時コピーだけで確認した。当時のWindowsコピーは暗号化移行前の形式であり、この記録はbeta.12で導入したDPAPI/AES-GCM形式の検証証拠ではない。
+## R2移行時の検証
 
-2026-10-06のbeta.12準備で、Oracleの新しいcurrent-generation backupとWindowsのAES-256-GCM暗号化backupを、復号後もファイル化せずに検証した。production DB preflight/migration・必須table・SQLite integrity・service初期化・privacy generation一致を確認し、restore drillは成功した。Gateway接続・DM送信は行っていない。本番DBへの書き戻しや破壊的なaccount delete実機試験は行っていない。
+2026-10-13 07:18 JST、Oracle VMから非公開R2 bucketへ暗号化uploadした最新objectを対象に実施した。R2からのdownload、復号、別DBへのrestore、`PRAGMA integrity_check`、必須table、privacy generation一致を確認し、検証は成功した。本番DBへの書き戻しは行っていない。
 
-| Source | Backup timestamp | Integrity / application open | Count-only validation | Measured isolated validation |
-| --- | --- | --- | --- | ---: |
-| Oracle VM | 2026-10-05 06:21:59 UTC | OK | mains 1 / links 1 / pending 0 / processing 0 / failed 0 | 59 ms |
-| Windows offsite | 2026-10-04 23:35:09 UTC | OK | mains 1 / links 1 / pending 0 / processing 0 / failed 0 | 56 ms |
+| Source | Backup timestamp | Integrity / application open | Count-only validation | Result |
+| --- | --- | --- | --- | --- |
+| Cloudflare R2 | 2026-10-13 07:18 JST | OK | mains 1 / links 1 / pending 0 / processing 0 / failed 0 | OK |
 
-計測値は同一端末上でのバックアップコピー、hash確認、DB open、service初期化の所要時間で、VM構築やDNS/Gateway復旧を含む全面復旧時間ではない。RTO 60分は別途の運用目標であり、SLAではない。source path、hash値、ID、username、本文は記録しない。
+R2 statusは`state=ok`、`remoteVerified=true`、`restoreVerified=true`、provider `cloudflare-r2`、privacy generation一致だった。source path、hash値、ID、username、本文は記録しない。
 
-運用目標：Oracle日次backupが成功している場合のRPOは最大24時間。Windows offsite backupは毎日06:00 JSTを目標とし、36時間更新されない場合はHealthchecks異常とする。RTOは復旧作業開始からサービス確認まで60分以内を目標とする。
+## 運用目標
+
+Oracle日次backupが成功している場合のRPOは最大24時間。R2 offsite backupはsystemd timerで日次実行し、最後の成功から36時間以上更新されない場合はHealthchecks異常とする。RTOは復旧作業開始からサービス確認まで60分以内を目標とするが、SLAではない。
+
+## 復旧時の原則
+
+暗号化鍵はOracle上のroot-onlyファイルと、Oracleとは独立したWindows DPAPI保護の復旧用コピーで管理する。R2 bucketはprivateのままにする。active DBを直接編集・初期化せず、復元前後のintegrity、main/link、queue、privacy generationを確認する。Windowsの旧encrypted backup、鍵、bundleは移行直後に削除しない。

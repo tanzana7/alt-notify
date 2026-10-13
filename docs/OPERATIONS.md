@@ -10,12 +10,13 @@
 - systemd: `alt-notify.service`
 - ログ: `journalctl -u alt-notify.service`
 - バックアップ: `altnoti-backup.timer`（毎日、最新7世代かつ14日以内）
+- オフサイトバックアップ: `altnoti-offsite-backup.timer`（Oracle VMから非公開Cloudflare R2へ暗号化、最新14世代かつ30日以内）
 - 外部監視: Healthchecks heartbeat（本番設定済み。成功pingと通知先を外部ダッシュボードで確認）
 - Windows管理SSH鍵: `%USERPROFILE%\.ssh\alt-notify-oracle-ed25519`（Ed25519、現在ユーザーとSYSTEMのみ読み取り。旧OneDrive鍵はOracleで失効し、ローカル実体を削除）
 
-HealthchecksはGateway全Shard Ready、pending/processing件数、直近15分のfailed件数に加え、送信可能時刻`available_at`を過ぎたキューの最古滞留時間（既定5分）を判定する。everyoneの60秒遅延や未来のretry予定は滞留に数えない。Windows VM外バックアップはroot管理の`/var/lib/altnoti-monitoring/offsite-backup-status.json`に成功・失敗と最終成功時刻のみを記録する。`alt-notify.service`は読み取り専用で、ユーザーID・Windowsパス・秘密値は記録しない。明示失敗または最終成功から既定36時間以上で既存Healthchecksへ`/fail`を送り、次の成功で自動復帰する。Windows PC停止・未ログオン中はTask Schedulerが走らないため、このstale判定で検知する。
+HealthchecksはGateway全Shard Ready、pending/processing件数、直近15分のfailed件数に加え、送信可能時刻`available_at`を過ぎたキューの最古滞留時間（既定5分）を判定する。everyoneの60秒遅延や未来のretry予定は滞留に数えない。Oracle→R2バックアップはroot管理の`/var/lib/altnoti-monitoring/offsite-backup-status.json`に成功・失敗、最終成功時刻、remote検証、restore検証、privacy generationのみを記録する。`alt-notify.service`は読み取り専用で、ユーザーID・秘密値を記録しない。明示失敗または最終成功から既定36時間以上で既存Healthchecksへ`/fail`を送り、次の成功で自動復帰する。
 
-Oracle backupは最新7世代かつ14日以内、Windows offsite backupは暗号化済み最新14世代かつ30日以内を保持する。個人IDを含まないprivacy deletion stateはroot管理・atomic write・symlink拒否で、世代、UTC時刻、cleanup状態、DB削除確定段階だけを保持する。削除前backupはstate世代が一致しないためrestore helperとoffsite取得で拒否される。アカウント削除後は整合性確認済みbackupを生成してからOracle旧世代を削除する。Windows端末がofflineの場合、VM外backupの物理削除は次回正常実行まで遅れるが、旧世代はrestore候補として使わない。systemd journalは`/etc/systemd/journald.conf.d/altnoti.conf`の`MaxRetentionSec=30day`でVM全体30日上限とする。
+Oracle backupは最新7世代かつ14日以内、Cloudflare R2 offsite backupは暗号化済み最新14世代かつ30日以内を保持する。個人IDを含まないprivacy deletion stateはroot管理・atomic write・symlink拒否で、世代、UTC時刻、cleanup状態、DB削除確定段階だけを保持する。削除前backupはstate世代が一致しないためrestore helperとoffsite取得で拒否される。アカウント削除後は整合性確認済みbackupを生成してからOracle旧世代を削除する。systemd journalは`/etc/systemd/journald.conf.d/altnoti.conf`の`MaxRetentionSec=30day`でVM全体30日上限とする。
 
 BotはNode.js＋systemdで動作させる。1GB VMではDocker常駐のオーバーヘッドを避け、Nodeプロセスのメモリ上限をsystemdの`MemoryMax`で制御する。Windows版Botは本番稼働中に起動しない。
 
@@ -64,24 +65,24 @@ sudo -u altnoti /usr/bin/node --input-type=module -e 'import initSqlJs from "sql
 
 復元は、サービス停止、対象DBを別名へ退避、検証済みバックアップを所定パスへ配置、存在・非空・整合性・所有者・権限確認、`reset-failed`、サービス起動、Gatewayと連携・queue確認の順で行う。削除や初期化はしない。
 
-VM外バックアップにはWindows側の`deploy/pull-offsite-backup.ps1`を使う。ラッパーはNodeプロセスを起動し、SSH stdoutのbinary streamをWindows上のAES-256-GCM暗号化へ直結する。SQLite平文のWindows temp/final fileは作らない。フォーマットのbyte layoutと鍵/移行条件は[BACKUP_FORMAT.md](BACKUP_FORMAT.md)を参照。hash/restoreが成功した後にencrypted finalをatomic renameし、既存の平文`.sqlite`世代を削除、その後に古いgeneration・期限超過・14世代超の暗号化コピーをpruneし、最後にOracleへ成功を記録する。最新のcurrent-generation safe backupを残せない場合はprune/成功記録を失敗させる。既定保存先は`%LOCALAPPDATA%\AltNotify\offsite-backups`でOneDriveやGitの外。DPAPI鍵を失うと暗号化世代は復号できず、鍵とbackupを同じ場所へコピーしない。Windows PCがofflineの間は旧コピーの物理削除は次回正常実行まで遅れるが、privacy epoch不一致のものはrestore候補にしない。
+オフサイトバックアップはOracle側の`altnoti-offsite-backup.service`が担う。Oracleの整合性確認済みartifactをAES-256-GCMで暗号化し、Cloudflare R2の一時objectへuploadする。サイズ・SHA-256・privacy generation metadata、R2からのdownload、復号、別DBrestore、SQLite integrity、schemaを確認した後にだけ正式objectと成功statusを確定する。フォーマットのbyte layoutと鍵/移行条件は[BACKUP_FORMAT.md](BACKUP_FORMAT.md)を参照。R2 bucketはprivateで、credentialは`/etc/altnoti-offsite/r2.env`、暗号鍵は`/etc/altnoti-offsite/backup.key`にroot-onlyで保存する。Oracleとは独立した復旧用コピーを保持し、秘密値をログ・Git・チャットへ出さない。旧Windows backupは削除せず、runtime経路からは除外する。
 
-Windows暗号化backupの鍵はCurrentUser DPAPIとそのWindows profileに依存する。Windows profileだけを失った場合はOracleの現行世代backup、Oracleだけを失った場合はWindows profileと暗号化backupから復旧する。両方を同時に失うと現在の保存データは復旧できない可能性があるが、サービス再構築と利用者の再登録・再連携は可能。現規模ではこの二重喪失を災害時データ損失リスクとして受容し、第三の鍵や保管先は作らない。データ無欠損SLAは提供しない。復旧時には必ずprivacy generationとrestore verifierを確認する。
+Oracle VM全損時に備え、R2 ciphertextの復号鍵はOracleとは独立した復旧用コピーへescrowする。Oracleと復旧用コピーの双方を失うと現存データを復旧できない可能性があるが、サービス再構築と利用者の再登録・再連携は可能。データ無欠損SLAは提供しない。復旧時には必ずprivacy generationとrestore verifierを確認する。
 
 ## 復旧目標とrestore drill
 
-- RPO運用目標：Oracle日次backupが成功している場合は最大24時間。Windows VM外backupは毎日06:00 JSTを目標とし、36時間更新されない場合はHealthchecks異常として扱う。
+- RPO運用目標：Oracle日次backupが成功している場合は最大24時間。R2 offsite backupはsystemd timerで日次実行し、36時間更新されない場合はHealthchecks異常として扱う。
 - RTO運用目標：復元作業開始からサービス確認まで60分以内。SLAではなく内部運用目標。
-- Oracle backup確認は`node deploy/verify-restore.mjs <Oracle-backup-name>`を使う。Windows encrypted backup確認は`node deploy/verify-offsite-backup.mjs <encrypted-backup-name>`を使う。最新の`dist`をbuildし、Windows復号はメモリ内だけで行う。live DBへ書き戻さず、Gateway/DMは起動しない。両方ともprivacy state世代、作成時刻、SHA-256、SQLite integrity、production DB preflight/service初期化を検証し、出力は成功状態だけにする。
+- Oracle backup確認は`node deploy/verify-restore.mjs <Oracle-backup-name>`を使う。R2 offsite backupは`sudo systemctl start altnoti-offsite-backup.service`でupload、download、復号、隔離restore drillまで実行する。live DBへ書き戻さず、Gateway/DMは起動しない。両方ともprivacy state世代、作成時刻、SHA-256、SQLite integrity、production DB preflight/service初期化を検証し、出力は成功状態だけにする。
 - 復元所要時間は`docs/RESTORE_DRILL.md`に個人データを含めず記録する。
 
-定期実行は運営者が指定した日本時間の時刻に、Task Schedulerでdaily・ログオン環境・StartWhenAvailable相当を設定する。作成後、実際の1回の取得・ハッシュ一致・別DBとしての読み取りを確認するまではVM外バックアップを「有効」と判定しない。
+定期実行はOracleの`altnoti-offsite-backup.timer`で行う。`Persistent=yes`によりVMが停止していた場合も起動後に実行対象となり、timerの実行・R2検証・隔離restore drill・status更新をjournalで確認するまではoffsite backupを「有効」と判定しない。
 
 SSH鍵の解決は`deploy/resolve-oracle-key.ps1`が上記OneDrive外の固定パスだけを使う。別鍵へrotationするときは新公開鍵登録、新鍵SSH/sudo確認、offsite backup成功、旧公開鍵の個別失効、旧鍵拒否、新鍵再確認の順に行う。鍵内容をログ・Issueへ貼らない。
 
-現在は毎日06:00 JSTに`AltNotifyOffsiteBackup`タスクを登録済み。Windows上で新規登録する場合は`deploy/install-offsite-task.ps1 -At "HH:mm"`を実行する。現在ユーザーのログオン中だけ走り、PC停止中の実行は次回利用可能時に開始する。バッテリー駆動中も実行可能に設定する。タスクの最終実行結果が失敗した場合は、VM外コピーが更新されていないものとして調査する。Windows PowerShell 5.1でも文字列を正しく読めるよう、実行するスクリプトはUTF-8 BOMで保存する。
+旧`AltNotifyOffsiteBackup` Task SchedulerはR2移行完了後にdisableした。既存のWindows backup、鍵、bundleは削除していない。現在の定期実行はOracleの`altnoti-offsite-backup.timer`が担い、`systemctl list-timers`、serviceの結果、journal、R2 statusを確認する。
 
-暗号化移行時は、新DPAPI鍵作成とACL検証、Oracle generation一致、GCM/hash確認、メモリ内restore drill、encrypted final保存の順に行う。これらすべてが成功してからだけ既存平文`.sqlite`を削除する。失敗時は既存平文copyを保持し、encrypted backup成功として報告しない。移行後にrecognizedな平文SQLite backupが残っていないこと、encrypted current-generation世代が少なくとも1つ残ることを確認する。Oracleの状態ファイルが`state=ok`かつgeneration一致になった後でのみ、外部backup監視を正常扱いする。状態ファイルの既定パスは`/var/lib/altnoti-monitoring/offsite-backup-status.json`で、秘密を含む環境ファイルの変更は不要。欠落・不正な状態ファイルはfail-closed。状態ファイルの親ディレクトリは`root:altnoti 750`、ファイルは`root:altnoti 640`で、Botに書込権限を与えない。失敗したbackupの詳細はWindowsタスク結果とローカル実行結果で調べ、状態ファイルには固定failure codeのみ記録する。秘密URLやTokenを状態ファイル・ログへ転記しない。
+R2移行時は、Oracle側暗号鍵の生成とroot-only ACL検証、credential probe、GCM/hash確認、R2 download、隔離restore drill、encrypted final保存の順に行う。これらすべてが成功してからだけR2を外部backupとして正常扱いにする。Oracleの状態ファイルが`state=ok`かつgeneration一致になった後でのみ、Healthchecksを正常扱いする。状態ファイルの既定パスは`/var/lib/altnoti-monitoring/offsite-backup-status.json`で、秘密を含む環境ファイルの変更は不要。欠落・不正な状態ファイルはfail-closed。状態ファイルの親ディレクトリは`root:altnoti 750`、ファイルは`root:altnoti 640`で、Botに書込権限を与えない。失敗したbackupの詳細はsystemd journalで固定failure codeだけを調べ、秘密URLやTokenを状態ファイル・ログへ転記しない。
 
 DBが欠落・空・破損した場合は、まずサービスを停止して原因と日次バックアップの整合性を調べる。**本番パスで新規DBを作らない。** 復元が必要なら上記の手順で検証済みバックアップから復元し、復元前後のmain/link件数とキュー状態を確認する。既存DBが見つかった場合も上書きせず、別名で保全してから判断する。
 

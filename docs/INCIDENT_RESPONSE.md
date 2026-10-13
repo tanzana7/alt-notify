@@ -57,6 +57,8 @@ Gateway切断中に発生したDiscordイベントは回収できない場合が
 
 Healthchecksの期限切れは、VM停止、Gateway切断、またはBotプロセス停止の候補である。OracleへSSH接続できる場合はsystemd、Gatewayログ、pending/processing/failed件数を確認する。Gatewayがreadyでもキュー閾値超過や失敗増加時は`/fail`通知を送るため、Discord側の通知障害と区別して調査する。heartbeat URLは秘密情報として扱い、ログに出さない。
 
+R2 offsite backupが原因候補の場合は、まず`altnoti-offsite-backup.timer`の有効・実行状態、`altnoti-offsite-backup.service`の直近結果、`offsite-backup-status.json`の`state`、`remoteVerified`、`restoreVerified`、privacy generationを確認する。credential、bucket、暗号鍵、active DBを直接編集せず、失敗原因を特定するまでBotを不要に再起動しない。R2へのupload・download・隔離restore drillが成功し、statusが`ok`へ戻った後にHealthchecksのsuccess probeを確認する。旧Windows Task Schedulerはruntime復旧経路ではないため、再有効化しない。
+
 ## 誤通知・通知停止
 
 - 連携解除または`/watch off`が送信直前の認可で反映されるか確認する。

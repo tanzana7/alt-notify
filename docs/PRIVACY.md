@@ -1,6 +1,6 @@
 # Alt Notify プライバシー情報
 
-最終更新：2026-10-11
+最終更新：2026-10-13
 
 ## DBへ保存する情報
 
@@ -27,17 +27,17 @@ Guild名とChannel名は通知表示のためDiscordのキャッシュから参�
 
 ## 保存場所と委託先
 
-本番データは運営者が管理するOracle Cloud VM上のSQLiteに保存します。日次Oracleバックアップは最新7世代・14日以内を保持します。`/account delete`では、active dataをディスク上で再確認し、削除後の整合性確認済みバックアップを作成します。その後、既知のOracle上の旧バックアップ・一時コピーを削除します。VM外コピーは運営者管理のWindows PCに最新14世代・30日以内を保持します。ファイルレベルで暗号化し、復号鍵はバックアップとは別にWindows DPAPIで保護します。PCが停止・未ログオンなど利用不能な間は物理削除が次回接続・正常実行まで遅れる場合があります。その間の削除前バックアップは通常の復元元として使用しません。次回の正常な暗号化バックアップ取得・復元確認後に古い暗号化コピーと移行前の平文コピーを削除します。バックアップに本文、Bot Token、平文連携コードは含みません。Discord公式API、Oracle Cloud、Healthchecks.ioを利用します。HealthchecksにはGateway・キュー・通知判定の予期しない失敗・VM外バックアップの鮮度を示すheartbeat/failのみを送り、Discordアカウント情報やメッセージ情報は送信しません。
+本番データは運営者が管理するOracle Cloud VM上のSQLiteに保存します。日次Oracleバックアップは最新7世代・14日以内を保持します。Oracle VMから非公開のCloudflare R2バケットへ、AES-256-GCMで暗号化したバックアップを最新14世代・30日以内の方針で保存します。R2への保存前にサイズ・ハッシュ・metadataを確認し、R2からのdownload、復号、別DBへのrestore drill、SQLite integrity、privacy generation一致が成功した場合だけ成功状態を記録します。暗号鍵はOracle上のroot-onlyファイルに置き、Oracleとは独立したWindows DPAPI保護の復旧用コピーを保持します。`/account delete`後はactive dataを削除し、削除後の世代でバックアップを更新します。削除前世代は通常の復元候補から除外し、R2上の旧暗号化世代は保持期限・世代整理に従って削除されます。バックアップに本文、Bot Token、平文連携コードは含みません。Discord公式API、Oracle Cloud、Cloudflare R2、Healthchecks.ioを利用します。HealthchecksにはGateway・キュー・通知判定の予期しない失敗・R2バックアップの鮮度を示すheartbeat/failのみを送り、Discordアカウント情報やメッセージ情報は送信しません。
 
 ## 削除
 
-`/account refresh` は実行者本人の保存済みusernameと通知履歴上の表示名を、現在のDiscordアカウント情報へ更新します。`/unlink` は個別連携を解除します。`/account delete` は連携の有無にかかわらず、実行した本人のactive dataを削除します。削除をディスクで確認し、新しい安全なバックアップを確認した後、既知のOracle旧コピーを削除して完了とします。削除前バックアップは通常の復元候補から除外されます。Windows PCがofflineの場合、古いVM外コピーの物理削除は次回接続まで遅れます。すべての媒体からの即時物理削除を保証するものではありません。
+`/account refresh` は実行者本人の保存済みusernameと通知履歴上の表示名を、現在のDiscordアカウント情報へ更新します。`/unlink` は個別連携を解除します。`/account delete` は連携の有無にかかわらず、実行した本人のactive dataを削除します。削除をディスクで確認し、削除後のprivacy generationに一致する安全なバックアップを作成します。削除前バックアップは通常の復元候補から除外されます。R2上の旧世代は保持・世代整理の範囲で残る場合があります。すべての媒体からの即時物理削除を保証するものではありません。
 
 ## ログ、バックアップと保持
 
 送信済み・失敗・取消済み通知履歴と重複排除情報は作成から7日後の定期cleanupで削除します。連携コードはハッシュのみを保存し、使用済みまたは期限切れのコード情報は定期cleanupで削除します。メイン登録は`/account delete`まで、サブ連携は`/unlink`または`/account delete`まで、Guild監視設定は対象連携またはアカウントの削除まで、entitlementは`/account delete`まで保持します。
 
-運用ログはOracle VMのsystemd journalに記録し、保持上限を30日に設定します。ログには時刻、レベル、処理ID、アカウント内部ID、状態、エラー概要を記録する場合がありますが、メッセージ本文、Bot Token、平文連携コードは記録しません。バックアップの暗号鍵はWindowsユーザーのDPAPI保護領域に別管理し、バックアップファイルに鍵を含めません。
+運用ログはOracle VMのsystemd journalに記録し、保持上限を30日に設定します。ログには時刻、レベル、処理ID、アカウント内部ID、状態、エラー概要を記録する場合がありますが、メッセージ本文、Bot Token、平文連携コード、R2資格情報は記録しません。バックアップはR2上でも暗号化され、暗号鍵はバックアップファイルに含めません。
 
 ## 問い合わせ
 

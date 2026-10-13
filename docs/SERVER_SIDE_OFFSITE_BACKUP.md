@@ -1,6 +1,6 @@
 # Oracle主導のR2オフサイトバックアップ
 
-この文書は、Windows PCを通常運用から外し、Oracle VMからCloudflare R2へ暗号化バックアップを送る構成の導入手順です。feature branchで準備された状態では、旧Windows Task Schedulerを停止してはいけません。R2の自動timer、remote検証、download、隔離restore drill、Healthchecks更新を確認した後だけ切り替えます。
+この文書は、Windows PCを通常運用から外し、Oracle VMからCloudflare R2へ暗号化バックアップを送る現行構成の運用手順です。R2のsystemd timer、remote検証、download、隔離restore drill、Healthchecks更新を確認済みで、Windows Task Schedulerは無効化しています。既存のWindows backup、DPAPI鍵、bundleは削除していません。
 
 ## 構成
 
@@ -21,7 +21,7 @@ Cloudflare Dashboardで専用のR2 bucketと対象bucketだけに限定したS3 
 
 ```text
 ALTN_R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
-ALTN_R2_BUCKET=alt-notify-backups
+ALTN_R2_BUCKET=altnotify
 ALTN_R2_ACCESS_KEY_ID=<r2-access-key>
 ALTN_R2_SECRET_ACCESS_KEY=<r2-secret-key>
 ALTN_R2_REGION=auto
@@ -50,7 +50,7 @@ systemctl show altnoti-offsite-backup.service --property=ExecMainStatus,Result
 journalctl -u altnoti-offsite-backup.service --since '24 hours ago' --no-pager
 ```
 
-自動実行成功前にWindows Task Schedulerをdisableしません。自動実行成功後にだけ、`AltNotifyOffsiteBackup`をdisableし、deleteは別判断にします。既存のWindows encrypted backup、DPAPI key、bundleは移行直後に削除しません。
+切替時は、手動のR2 upload・head・download・restore drill・status `ok`、続いてsystemd経路の成功を確認してから`AltNotifyOffsiteBackup`をdisableする。現在はこのゲートを通過済みで、Task Schedulerはdisable、deleteはしていない。既存のWindows encrypted backup、DPAPI key、bundleは削除しない。
 
 ## 失敗時の扱い
 
@@ -60,4 +60,4 @@ journalctl -u altnoti-offsite-backup.service --since '24 hours ago' --no-pager
 - 本番DBへのrestore、DB初期化、active DBの直接編集は禁止。
 - Bot serviceはbackup migrationのために再起動しない。
 
-Cloudflare credentialと独立recovery keyの準備・escrowは外部サービスと物理保管を伴うため、機械的に推測・自動作成しません。
+Cloudflare credentialと独立recovery keyの準備・escrowは外部サービスと物理保管を伴うため、機械的に推測・自動作成しません。移行時にはcredentialをOracleのroot-only設定へ安全に配置し、backup.keyの独立した復旧用コピーを作成してからprobe、upload、download、restore drill、systemd実行を確認します。現在のtimerはenableかつactiveで、成功前にWindows taskを無効化しない切替ゲートを通過済みです。
