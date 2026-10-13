@@ -34,7 +34,7 @@ UptimeRobotは公開HTTP endpointを必要とするため、Gateway Botだけの
 - バックアップ暗号化、SHA-256、保持世代、復元テスト
 - R2到達失敗時の再試行とアラート
 
-今回はアカウント、バケット、API Token、外部転送を追加していない。R2は同一VM障害から復旧できる利点がある一方、秘密情報と外部費用管理が増えるため、承認後に別変更として実装する。
+このfeature branchでは、OracleからR2へ暗号化uploadし、head/download/restore verify後にstatusを更新する実装とsystemd timerを準備している。R2 bucket、専用API credential、Oracle VMとは独立した暗号鍵escrowが揃うまで本番切替は行わず、既存Windows backupも停止しない。導入ゲートと秘密設定は[SERVER_SIDE_OFFSITE_BACKUP.md](SERVER_SIDE_OFFSITE_BACKUP.md)に記載する。
 
 ### Cloudflare Workers経由
 

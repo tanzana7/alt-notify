@@ -1,0 +1,24 @@
+[Unit]
+Description=Alt Notify encrypted Cloudflare R2 offsite backup
+After=alt-notify.service
+Requires=alt-notify.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/altnoti-offsite-backup
+EnvironmentFile=/etc/altnoti-offsite/r2.env
+WorkingDirectory=/opt/altnoti
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/altnoti/backups /var/lib/altnoti-monitoring /run/lock
+ReadOnlyPaths=/etc/altnoti-offsite
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictSUIDSGID=yes
+LockPersonality=yes
+TimeoutStartSec=10min
